@@ -38,16 +38,22 @@ O GEOFlow é lançado sob a [Licença Apache 2.0](../../LICENSE). Você pode usa
 
 ## 🖼 Preview da Interface
 
-<p>
-  <img src="../../docs/images/screenshots/dashboard-en.png" alt="GEOFlow dashboard preview" width="48%" />
-  <img src="../../docs/images/screenshots/tasks-en.png" alt="GEOFlow task management preview" width="48%" />
-</p>
-<p>
-  <img src="../../docs/images/screenshots/materials-en.png" alt="GEOFlow materials preview" width="48%" />
-  <img src="../../docs/images/screenshots/ai-config-en.png" alt="GEOFlow AI configuration preview" width="48%" />
-</p>
+<table>
+  <tr>
+    <td width="34%" rowspan="3"><img src="../../docs/images/screenshots/analytics-en.png" alt="GEOFlow analytics preview" /><br /><sub>Analytics</sub></td>
+    <td width="33%" rowspan="2"><img src="../../docs/images/screenshots/site-settings-en.png" alt="GEOFlow site settings preview" /><br /><sub>Site Settings</sub></td>
+    <td width="33%"><img src="../../docs/images/screenshots/dashboard-en.png" alt="GEOFlow admin dashboard preview" /><br /><sub>Admin Dashboard</sub></td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="../../docs/images/screenshots/tasks-en.png" alt="GEOFlow task management preview" /><br /><sub>Task Management</sub></td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="../../docs/images/screenshots/ai-config-en.png" alt="GEOFlow AI model configuration preview" /><br /><sub>AI Model Configuration</sub></td>
+    <td width="33%"><img src="../../docs/images/screenshots/materials-en.png" alt="GEOFlow materials preview" /><br /><sub>Materials</sub></td>
+  </tr>
+</table>
 
-Essas telas cobrem a home page, agendamento de tarefas, fluxo de trabalho de artigos e configuração de modelo. Mais documentação do admin está em `../../docs/` (adicione ou substitua screenshots localmente se os caminhos estiverem faltando).
+Essas telas cobrem o painel admin, analytics, tarefas, materiais, configuração de modelos e ajustes do site.
 
 ---
 
