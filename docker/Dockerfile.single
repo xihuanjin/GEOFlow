@@ -1,19 +1,18 @@
 # syntax=docker/dockerfile:1
 ARG COMPOSER_IMAGE=composer:2
+ARG NODE_IMAGE=node:20-alpine
 ARG NGINX_IMAGE=nginx:1.27-alpine
 ARG BASE_IMAGE=geoflow-base
 
 # =====================================================================
-# Stage 1: Composer vendor（零编译，纯下载）
+# Stage 1: Composer vendor
 # =====================================================================
 FROM ${COMPOSER_IMAGE} AS vendor
 
 WORKDIR /app
 
 ARG COMPOSER_PACKAGIST_MIRROR=https://mirrors.aliyun.com/composer/
-ENV COMPOSER_ALLOW_SUPERUSER=1 \
-    COMPOSER_MEMORY_LIMIT=-1 \
-    COMPOSER_PROCESS_TIMEOUT=2000
+ENV COMPOSER_ALLOW_SUPERUSER=1     COMPOSER_MEMORY_LIMIT=-1     COMPOSER_PROCESS_TIMEOUT=2000
 
 RUN if [ -n "${COMPOSER_PACKAGIST_MIRROR}" ]; then \
         composer config -g repo.packagist composer "${COMPOSER_PACKAGIST_MIRROR}"; \
@@ -37,30 +36,42 @@ RUN composer dump-autoload \
     --no-scripts
 
 # =====================================================================
-# Stage 2: Nginx 静态资源
+# Stage 2: Frontend assets (Vite build)
+# =====================================================================
+FROM ${NODE_IMAGE} AS frontend
+
+WORKDIR /app
+
+RUN npm config set registry https://registry.npmmirror.com
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY resources/ resources/
+COPY vite.config.js ./
+RUN npm run build
+
+# =====================================================================
+# Stage 3: Nginx static assets
 # =====================================================================
 FROM ${NGINX_IMAGE} AS nginx-assets
 
 WORKDIR /var/www/html
 COPY public /var/www/html/public
+COPY --from=frontend /app/public/build /var/www/html/public/build
 COPY docker/nginx/default.single.conf /etc/nginx/conf.d/default.conf
 RUN rm -f /var/www/html/public/storage
 
 # =====================================================================
-# Stage 3: 最终应用镜像（基于 geoflow-base，秒级构建）
+# Stage 4: Final image
 # =====================================================================
 FROM ${BASE_IMAGE}
 
 WORKDIR /var/www/html
 
-# --- Nginx 配置 ---
 COPY --from=nginx-assets /var/www/html/public /var/www/html/public
 COPY docker/nginx/default.single.conf /etc/nginx/conf.d/default.conf
-
-# --- Supervisor 配置 ---
 COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
-
-# --- 应用代码 ---
 COPY --from=vendor /app /var/www/html
 
 RUN mkdir -p \
@@ -73,13 +84,11 @@ RUN mkdir -p \
  && ln -sf ../storage/app/public public/storage \
  && chown -R www-data:www-data bootstrap/cache storage
 
-# --- Entrypoint ---
 COPY docker/entrypoint.single.sh /usr/local/bin/geoflow-entrypoint-single
 RUN chmod +x /usr/local/bin/geoflow-entrypoint-single
 
 EXPOSE 18080
 
-# 1Panel 健康检查：Nginx 返回 200 即正常
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD curl -sf http://127.0.0.1:18080/health || exit 1
 
