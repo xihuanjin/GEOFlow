@@ -48,8 +48,11 @@ if [ ! -e public/storage ]; then
   php artisan storage:link --force --no-interaction
 fi
 
-# 权限：为 www-data（PHP-FPM/Horizon/Schedule/Reverb）开放 storage/bootstrap-cache
-chown -R www-data:www-data bootstrap/cache storage
+# 权限：只在权限不对时修正（避免每次 chown -R 扫描大 storage）
+CURRENT_OWNER=$(stat -c '%u:%g' storage 2>/dev/null || echo "")
+if [ "${CURRENT_OWNER}" != "$(id -u www-data):$(id -g www-data)" ]; then
+  chown -R www-data:www-data bootstrap/cache storage
+fi
 
 # ------------------------------------------------------------------
 # 等待远程 PostgreSQL（1Panel 上已有的数据库服务）

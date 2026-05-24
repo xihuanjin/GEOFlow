@@ -20,7 +20,6 @@ RUN if [ -n "${COMPOSER_PACKAGIST_MIRROR}" ]; then \
     fi
 
 COPY composer.json composer.lock ./
-RUN composer require predis/predis --no-interaction --no-scripts --update-no-dev
 RUN composer install \
     --no-dev \
     --no-interaction \
@@ -79,6 +78,10 @@ COPY docker/entrypoint.single.sh /usr/local/bin/geoflow-entrypoint-single
 RUN chmod +x /usr/local/bin/geoflow-entrypoint-single
 
 EXPOSE 18080
+
+# 1Panel 健康检查：Nginx 返回 200 即正常
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD curl -sf http://127.0.0.1:18080/health || exit 1
 
 ENTRYPOINT ["/usr/local/bin/geoflow-entrypoint-single"]
 CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf", "-n"]

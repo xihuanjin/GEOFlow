@@ -25,6 +25,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         libpq-dev \
         libzip-dev \
         nginx-light \
+        postgresql-client \
         supervisor \
         unzip; \
     docker-php-ext-install mbstring opcache pcntl pdo_pgsql zip; \
