@@ -87,8 +87,13 @@ if [ "${AUTO_SEED:-false}" = "true" ]; then
 fi
 
 # ------------------------------------------------------------------
-# 优化（config/events/routes/views 缓存）
+# 服务发现 + 优化（package:discover / config/events/routes/views 缓存）
 # ------------------------------------------------------------------
+if [ ! -f bootstrap/cache/packages.php ]; then
+  echo "[entrypoint] php artisan package:discover"
+  php artisan package:discover --no-interaction
+fi
+
 if [ "${AUTO_OPTIMIZE:-true}" = "true" ]; then
   echo "[entrypoint] php artisan optimize"
   php artisan optimize --no-interaction || echo "[entrypoint] warning: optimize failed, continuing"

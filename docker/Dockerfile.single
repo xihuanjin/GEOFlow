@@ -64,8 +64,7 @@ COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 # --- 应用代码 ---
 COPY --from=vendor /app /var/www/html
 
-RUN php artisan package:discover --ansi \
- && mkdir -p \
+RUN mkdir -p \
         bootstrap/cache \
         storage/app/public \
         storage/framework/cache/data \
