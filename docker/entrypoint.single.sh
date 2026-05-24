@@ -77,7 +77,7 @@ fi
 # ------------------------------------------------------------------
 if [ "${AUTO_MIGRATE:-true}" = "true" ]; then
   echo "[entrypoint] php artisan migrate --force"
-  php artisan migrate --force --no-interaction
+  php artisan migrate --force --no-interaction || echo "[entrypoint] warning: migrate failed, check PostgreSQL extensions"
 fi
 
 # ------------------------------------------------------------------
