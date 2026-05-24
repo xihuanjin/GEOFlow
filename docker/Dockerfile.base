@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1
+ARG PHP_FPM_IMAGE=php:8.4-fpm-bookworm
+
+# =====================================================================
+# 基础镜像 — Nginx + PHP扩展 + Supervisor，一次性构建固化
+# 不常改，改完 push 到仓库或服务器本地保存
+# =====================================================================
+FROM ${PHP_FPM_IMAGE}
+
+# 阿里云镜像 + 系统依赖（只装一次，后续镜像缓存）
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    set -eux; \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources; \
+        sed -i 's|security.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources; \
+    elif [ -f /etc/apt/sources.list ]; then \
+        sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list; \
+        sed -i 's|security.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        curl \
+        libonig-dev \
+        libpq-dev \
+        libzip-dev \
+        nginx-light \
+        supervisor \
+        unzip; \
+    docker-php-ext-install mbstring opcache pcntl pdo_pgsql zip; \
+    rm -rf /var/lib/apt/lists/*
+
+ENV TZ=Asia/Shanghai

@@ -1,44 +1,64 @@
 #!/usr/bin/env bash
-# build-single.sh — 构建 GEOFlow 单容器镜像（Docker BuildKit 加速版）
-set -eu
+# build-single.sh — GEOFlow 单容器构建（分层构建版）
+#
+# 步骤:
+#   1. docker/Dockerfile.base  → geoflow-base    （只跑一次，固话系统依赖）
+#   2. docker/Dockerfile.single → geoflow:latest  （秒级，只 COPY 应用代码）
+set -euo pipefail
 
-IMAGE_NAME="${IMAGE_NAME:-geoflow:latest}"
-DOCKERFILE="${DOCKERFILE:-docker/Dockerfile.single}"
-
-# 启用 BuildKit（支持 apt cache mount，二次构建免下载）
 export DOCKER_BUILDKIT=1
 
-echo "==> Building single-container image: ${IMAGE_NAME}"
-echo "==> Dockerfile: ${DOCKERFILE}"
-echo "==> BuildKit: enabled"
+BASE_TAG="${BASE_TAG:-geoflow-base}"
+APP_TAG="${APP_TAG:-geoflow:latest}"
+
+# ==============================
+# Step 1: 基础镜像（系统层）
+# ==============================
+echo "╔════════════════════════════════════════╗"
+echo "║  Step 1/2: Base image (system layer)  ║"
+echo "╚════════════════════════════════════════╝"
+echo "  → ${BASE_TAG}"
 
 docker build \
-  -t "${IMAGE_NAME}" \
-  -f "${DOCKERFILE}" \
+  -t "${BASE_TAG}" \
+  -f docker/Dockerfile.base \
   --build-arg COMPOSER_PACKAGIST_MIRROR=https://mirrors.aliyun.com/composer/ \
   .
 
 echo ""
-echo "==> Build complete!"
+echo "  ✅ Base image built: ${BASE_TAG}"
 echo ""
-echo "=== 部署方式 ==="
+
+# ==============================
+# Step 2: 应用镜像（代码层）
+# ==============================
+echo "╔═════════════════════════════════════════╗"
+echo "║  Step 2/2: App image (application code) ║"
+echo "╚═════════════════════════════════════════╝"
+echo "  → ${APP_TAG} (FROM ${BASE_TAG})"
+
+docker build \
+  -t "${APP_TAG}" \
+  -f docker/Dockerfile.single \
+  --build-arg BASE_IMAGE="${BASE_TAG}" \
+  --build-arg COMPOSER_PACKAGIST_MIRROR=https://mirrors.aliyun.com/composer/ \
+  .
+
 echo ""
-echo "方式 A — docker run:"
-echo "  docker run -d \\"
-echo "    --name geoflow \\"
-echo "    --restart always \\"
-echo "    -p 18080:18080 \\"
-echo "    -v /path/to/.env.single:/var/www/html/.env \\"
-echo "    -v /path/to/storage:/var/www/html/storage \\"
-echo "    ${IMAGE_NAME}"
+echo "  ✅ App image built: ${APP_TAG}"
 echo ""
-echo "方式 B — 1Panel → 容器 → 创建容器:"
-echo "  镜像:    ${IMAGE_NAME}"
-echo "  端口:    18080:18080"
-echo "  挂载:   /path/to/.env.single → /var/www/html/.env"
-echo "  挂载:   /path/to/storage    → /var/www/html/storage"
-echo "  重启:   always"
+echo "══════════════════════════════════════════"
+echo "  Deploy with:"
+echo "    docker run -d --name geoflow --restart always \\"
+echo "      -p 18080:18080 \\"
+echo "      -v /path/to/.env.single:/var/www/html/.env \\"
+echo "      -v /path/to/storage:/var/www/html/storage \\"
+echo "      ${APP_TAG}"
 echo ""
-echo "初次构建慢正常（下载依赖），二次构建利用缓存会快很多。"
-echo "如需 Docker Hub 国内镜像加速，在 /etc/docker/daemon.json 添加:"
-echo '  { "registry-mirrors": ["https://docker.1panel.live"] }'
+echo "  Or use 1Panel → 容器 → 创建容器"
+echo "══════════════════════════════════════════"
+echo ""
+echo "💡 Tips:"
+echo "  - 基础镜像只改系统依赖时才需重跑 Step 1"
+echo "  - 日常改代码只需 Step 2（秒级）"
+echo "  - docker.rebuild.sh 快捷脚本: 只跑 Step 2"
