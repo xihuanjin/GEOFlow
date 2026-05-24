@@ -26,7 +26,8 @@ RUN composer install \
     --no-interaction \
     --prefer-dist \
     --classmap-authoritative \
-    --no-scripts
+    --no-scripts \
+    --ignore-platform-req=ext-pcntl
 
 COPY . .
 
