@@ -10,9 +10,6 @@ FROM ${COMPOSER_IMAGE} AS vendor
 
 WORKDIR /app
 
-# pcntl 是 Horizon 编译期依赖（只装一次，composer image 缓存层）
-RUN docker-php-ext-install pcntl
-
 ARG COMPOSER_PACKAGIST_MIRROR=https://mirrors.aliyun.com/composer/
 ENV COMPOSER_ALLOW_SUPERUSER=1 \
     COMPOSER_MEMORY_LIMIT=-1 \
@@ -38,8 +35,7 @@ RUN composer dump-autoload \
     --no-dev \
     --no-interaction \
     --classmap-authoritative \
-    --no-scripts \
- && php artisan package:discover --ansi
+    --no-scripts
 
 # =====================================================================
 # Stage 2: Nginx 静态资源
@@ -96,6 +92,9 @@ COPY docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
 # --- 5) 应用代码 + 存储目录 ---
 COPY --from=vendor /app /var/www/html
+
+# package:discover 需要 pcntl，在最终阶段执行（已在步骤 1 编译）
+RUN php artisan package:discover --ansi
 
 RUN mkdir -p \
         bootstrap/cache \
