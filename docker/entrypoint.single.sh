@@ -13,13 +13,15 @@ set -eu
 cd /var/www/html
 
 # ------------------------------------------------------------------
-# .env 必须存在（1Panel 挂载进来）
+# .env 必须存在（1Panel 挂载进来），加载到环境变量
 # ------------------------------------------------------------------
 if [ ! -f .env ]; then
   echo "[entrypoint] FATAL: .env not found at /var/www/html/.env"
   echo "[entrypoint] Please mount it via 1Panel volume:  /path/to/.env:/var/www/html/.env"
   exit 1
 fi
+
+set -a; . ./.env; set +a
 
 # ------------------------------------------------------------------
 # APP_KEY：移除无效的环境变量，避免覆盖 .env 中的有效密钥
