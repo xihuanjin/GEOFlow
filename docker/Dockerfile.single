@@ -20,7 +20,6 @@ RUN if [ -n "${COMPOSER_PACKAGIST_MIRROR}" ]; then \
     fi
 
 COPY composer.json composer.lock ./
-RUN composer require predis/predis --no-interaction --no-scripts --update-no-dev --ignore-platform-req=ext-pcntl
 RUN composer install \
     --no-dev \
     --no-interaction \
