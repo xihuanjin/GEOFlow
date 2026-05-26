@@ -215,6 +215,51 @@ class AdminMaterialsPagesTest extends TestCase
         $this->assertSame([0.1, 0.2, 0.3], json_decode((string) $chunk->embedding_json, true));
     }
 
+    public function test_knowledge_base_list_uses_friendly_refresh_chunks_progress_ui(): void
+    {
+        $admin = Admin::query()->create([
+            'username' => 'knowledge_refresh_ui_admin',
+            'password' => 'secret-123',
+            'email' => 'knowledge-refresh-ui-admin@example.com',
+            'display_name' => 'Knowledge Refresh UI Admin',
+            'role' => 'admin',
+            'status' => 'active',
+        ]);
+
+        AiModel::query()->create([
+            'name' => 'Test Embedding',
+            'version' => '',
+            'api_key' => app(ApiKeyCrypto::class)->encrypt('test-api-key'),
+            'model_id' => 'test-embedding-model',
+            'model_type' => 'embedding',
+            'api_url' => 'https://ai.test',
+            'failover_priority' => 1,
+            'daily_limit' => 100,
+            'used_today' => 0,
+            'total_used' => 0,
+            'status' => 'active',
+        ]);
+
+        KnowledgeBase::query()->create([
+            'name' => '待更新切片知识库',
+            'description' => 'desc',
+            'content' => 'GEOFlow 支持知识库切片和向量化检索。',
+            'character_count' => 22,
+            'file_type' => 'markdown',
+            'word_count' => 22,
+        ]);
+
+        $this->actingAs($admin, 'admin')
+            ->get(route('admin.knowledge-bases.index'))
+            ->assertOk()
+            ->assertSee('data-knowledge-refresh-modal', false)
+            ->assertSee('data-refresh-chunks-form', false)
+            ->assertSee('data-refresh-progress', false)
+            ->assertSee(__('admin.knowledge_bases.refresh_confirm_title'))
+            ->assertSee(__('admin.knowledge_bases.refresh_progress_initial'))
+            ->assertDontSee(__('admin.knowledge_bases.confirm_refresh_chunks', ['name' => '待更新切片知识库']));
+    }
+
     public function test_refresh_knowledge_chunks_requires_embedding_model(): void
     {
         Http::fake();
@@ -283,13 +328,20 @@ class AdminMaterialsPagesTest extends TestCase
         ]);
 
         $job = UrlImportJob::query()->firstOrFail();
+        config(['app.url' => 'https://configured.example']);
+        $runPath = route('admin.url-import.run', ['jobId' => (int) $job->id], false);
+        $statusPath = route('admin.url-import.status', ['jobId' => (int) $job->id], false);
+
         $this->actingAs($admin, 'admin')
             ->get(route('admin.url-import.show', ['jobId' => (int) $job->id]))
             ->assertOk()
             ->assertSee('name="csrf-token"', false)
-            ->assertSee('data-run-url', false)
+            ->assertSee('data-run-url="'.$runPath.'"', false)
+            ->assertSee('data-status-url="'.$statusPath.'"', false)
             ->assertSee('data-status="queued"', false)
             ->assertSee('data-has-result="0"', false)
+            ->assertDontSee('https://configured.example'.$runPath, false)
+            ->assertDontSee('https://configured.example'.$statusPath, false)
             ->assertDontSee('sessionStorage', false)
             ->assertDontSee('setTimeout(() => window.location.reload(), 1000)', false);
 

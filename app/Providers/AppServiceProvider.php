@@ -10,7 +10,9 @@ use App\Services\GeoFlow\HorizonMetricsAdapter;
 use App\Services\GeoFlow\JobQueueService;
 use App\Services\GeoFlow\TaskLifecycleService;
 use App\Services\GeoFlow\TaskMonitoringQueryService;
+use App\Support\GeoFlow\OutboundHttpProxy;
 use App\View\Composers\SiteLayoutComposer;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Facades\View;
 use Illuminate\Support\ServiceProvider;
@@ -38,6 +40,8 @@ class AppServiceProvider extends ServiceProvider
         if ($appUrl = config('app.url')) {
             URL::forceRootUrl($appUrl);
         }
+
+        Http::globalMiddleware(OutboundHttpProxy::middleware());
 
         View::composer(['site.layout', 'theme.*.layout'], SiteLayoutComposer::class);
 
