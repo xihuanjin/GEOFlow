@@ -10,6 +10,12 @@ $adminBasePath = $adminBasePath !== '' ? $adminBasePath : 'geo_admin';
 $defaultUpdateMetadataUrl = 'https://raw.githubusercontent.com/yaojingang/GEOFlow/main/version.json';
 $updateMetadataUrl = trim((string) env('GEOFLOW_UPDATE_METADATA_URL', $defaultUpdateMetadataUrl));
 $updateMetadataUrl = $updateMetadataUrl !== '' ? $updateMetadataUrl : $defaultUpdateMetadataUrl;
+$versionManifestPath = __DIR__.'/../version.json';
+$versionManifest = is_file($versionManifestPath)
+    ? json_decode((string) file_get_contents($versionManifestPath), true)
+    : [];
+$appVersion = is_array($versionManifest) ? trim((string) ($versionManifest['version'] ?? '')) : '';
+$appVersion = $appVersion !== '' ? $appVersion : '2.0.4';
 
 return [
 
@@ -32,14 +38,33 @@ return [
     // 默认前台主题；后台未显式选择主题时使用
     'default_theme' => env('GEOFLOW_DEFAULT_THEME', 'toutiao-news-20260426'),
 
-    // 当前系统版本（底部展示、GitHub 更新检查对比）
-    'app_version' => env('GEOFLOW_APP_VERSION', '2.0'),
+    // 当前系统版本（底部展示、GitHub 更新检查对比）；默认跟随本地 version.json，避免已部署 .env 锁死版本号。
+    'app_version' => $appVersion,
     // 欢迎弹窗「介绍」文案版本：变更后所有管理员会再次看到介绍弹窗
-    'welcome_intro_version' => env('GEOFLOW_WELCOME_INTRO_VERSION', '2.0'),
+    'welcome_intro_version' => env('GEOFLOW_WELCOME_INTRO_VERSION', '2.1'),
     // GitHub version.json 地址；默认每天检查一次，可通过 GEOFLOW_UPDATE_CHECK_ENABLED=false 关闭
     'update_check_enabled' => filter_var(env('GEOFLOW_UPDATE_CHECK_ENABLED', env('APP_ENV') !== 'testing'), FILTER_VALIDATE_BOOLEAN),
     'update_metadata_url' => $updateMetadataUrl,
     'update_metadata_cache_ttl_seconds' => (int) env('GEOFLOW_UPDATE_METADATA_CACHE_TTL', 86400),
+    // 后台系统更新中心：默认可查看和备份，真正执行代码更新默认关闭。
+    'update_center_enabled' => filter_var(env('GEOFLOW_UPDATE_CENTER_ENABLED', true), FILTER_VALIDATE_BOOLEAN),
+    'update_execution_enabled' => filter_var(env('GEOFLOW_UPDATE_EXECUTION_ENABLED', false), FILTER_VALIDATE_BOOLEAN),
+    'update_rollback_enabled' => filter_var(env('GEOFLOW_UPDATE_ROLLBACK_ENABLED', false), FILTER_VALIDATE_BOOLEAN),
+    'update_backup_keep' => max(1, (int) env('GEOFLOW_UPDATE_BACKUP_KEEP', 10)),
+    'update_backup_path' => trim((string) env('GEOFLOW_UPDATE_BACKUP_PATH', 'geoflow-updates'), '/'),
+    'update_allowed_repository' => trim((string) env('GEOFLOW_UPDATE_ALLOWED_REPOSITORY', 'https://github.com/yaojingang/GEOFlow'), '/'),
+    'update_archive_max_bytes' => max(1, (int) env('GEOFLOW_UPDATE_ARCHIVE_MAX_BYTES', 50 * 1024 * 1024)),
+    'update_archive_max_files' => max(1, (int) env('GEOFLOW_UPDATE_ARCHIVE_MAX_FILES', 2000)),
+    'update_archive_max_file_bytes' => max(1, (int) env('GEOFLOW_UPDATE_ARCHIVE_MAX_FILE_BYTES', 50 * 1024 * 1024)),
+    'update_archive_max_uncompressed_bytes' => max(1, (int) env('GEOFLOW_UPDATE_ARCHIVE_MAX_UNCOMPRESSED_BYTES', 150 * 1024 * 1024)),
+    'update_min_free_disk_bytes' => max(1, (int) env('GEOFLOW_UPDATE_MIN_FREE_DISK_BYTES', 200 * 1024 * 1024)),
+    'update_preflight_check_git_dirty' => filter_var(env('GEOFLOW_UPDATE_PREFLIGHT_CHECK_GIT_DIRTY', true), FILTER_VALIDATE_BOOLEAN),
+    'update_require_admin_password' => filter_var(env('GEOFLOW_UPDATE_REQUIRE_ADMIN_PASSWORD', true), FILTER_VALIDATE_BOOLEAN),
+    'update_archive_apply_enabled' => filter_var(env('GEOFLOW_UPDATE_ALLOW_ARCHIVE_APPLY', false), FILTER_VALIDATE_BOOLEAN),
+    'update_database_backup_enabled' => filter_var(env('GEOFLOW_UPDATE_DATABASE_BACKUP_ENABLED', true), FILTER_VALIDATE_BOOLEAN),
+    'update_lock_ttl_seconds' => max(30, (int) env('GEOFLOW_UPDATE_LOCK_TTL', 900)),
+    // 系统更新任务超过该时间仍处于 queued/running 时，在更新中心提示为可能卡住。
+    'update_run_stale_minutes' => max(1, (int) env('GEOFLOW_UPDATE_RUN_STALE_MINUTES', 15)),
 
     // 前台列表每页条数
     'items_per_page' => (int) env('GEOFLOW_ITEMS_PER_PAGE', 12),
@@ -56,7 +81,7 @@ return [
     // 默认仅让 AI/Embedding 供应商走代理，避免 WordPress REST、目标站 Agent 等站点通信被本机代理截获；如需全局代理可设为 *。
     'outbound_proxy_hosts' => array_values(array_filter(array_map('trim', explode(',', (string) env(
         'GEOFLOW_PROXY_HOSTS',
-        'generativelanguage.googleapis.com,api.openai.com,api.deepseek.com,openrouter.ai,api.anthropic.com,api.mistral.ai,api.groq.com,api.x.ai,api.minimaxi.com,api.siliconflow.cn,ark.cn-beijing.volces.com,dashscope.aliyuncs.com,open.bigmodel.cn'
+        'generativelanguage.googleapis.com,api.openai.com,api.deepseek.com,openrouter.ai,api.anthropic.com,api.mistral.ai,api.groq.com,api.x.ai,api.minimax.io,api.minimaxi.com,api.siliconflow.cn,ark.cn-beijing.volces.com,dashscope.aliyuncs.com,open.bigmodel.cn'
     ))), static fn (string $host): bool => $host !== '')),
     // 为 true 时记录知识库「查询向量」是否由默认 embedding 接口生成（便于对照 bak 验证；默认关闭）
     'debug_knowledge_query_embedding' => filter_var(env('GEOFLOW_DEBUG_KNOWLEDGE_QUERY_EMBEDDING', false), FILTER_VALIDATE_BOOLEAN),
@@ -64,6 +89,9 @@ return [
     'semantic_chunking_max_chars' => max(1, (int) env('GEOFLOW_SEMANTIC_CHUNKING_MAX_CHARS', 20000)),
     // Embedding 文档向量化单次请求切片数；部分供应商限制 batch 较小，默认保守拆分。
     'embedding_batch_size' => max(1, min(64, (int) env('GEOFLOW_EMBEDDING_BATCH_SIZE', 1))),
+    // 正文生成默认最大输出 token 数；当 AI 模型未单独配置 max_tokens 时使用此兜底值，
+    // 避免依赖各服务商较小的默认上限（常见 4K）导致长文被截断。
+    'content_max_tokens' => max(256, (int) env('GEOFLOW_CONTENT_MAX_TOKENS', 8192)),
 
     // 本地上传根目录（绝对路径）
     'upload_path' => env('GEOFLOW_UPLOAD_PATH', public_path('assets/images')),

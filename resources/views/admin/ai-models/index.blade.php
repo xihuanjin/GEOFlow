@@ -224,6 +224,7 @@
                         <label class="block text-sm font-medium text-gray-700 mb-2">{{ __('admin.ai_models.quick_chat') }}</label>
                         <div class="flex flex-wrap gap-2">
                             <button type="button" onclick="fillPreset('minimax')" class="inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-700 bg-white hover:bg-gray-50">MiniMax</button>
+                            <button type="button" onclick="fillPreset('minimax_m27')" class="inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-700 bg-white hover:bg-gray-50">MiniMax M2.7</button>
                             <button type="button" onclick="fillPreset('minimax_highspeed')" class="inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-700 bg-white hover:bg-gray-50">MiniMax Highspeed</button>
                             <button type="button" onclick="fillPreset('openai')" class="inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-700 bg-white hover:bg-gray-50">OpenAI</button>
                             <button type="button" onclick="fillPreset('gemini')" class="inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-700 bg-white hover:bg-gray-50">Gemini</button>
@@ -235,6 +236,7 @@
                         <div class="flex flex-wrap gap-2">
                             <button type="button" onclick="fillPreset('openai_embedding')" class="inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-700 bg-white hover:bg-gray-50">OpenAI Embedding</button>
                             <button type="button" onclick="fillPreset('gemini_embedding')" class="inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-700 bg-white hover:bg-gray-50">Gemini Embedding</button>
+                            <button type="button" onclick="fillPreset('volcengine_ark_embedding')" class="inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-700 bg-white hover:bg-gray-50">Doubao Embedding</button>
                             <button type="button" onclick="fillPreset('zhipu_embedding')" class="inline-flex items-center px-3 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-700 bg-white hover:bg-gray-50">Zhipu Embedding</button>
                         </div>
                         <p class="mt-1 text-xs text-gray-500">{{ __('admin.ai_models.quick_help') }}</p>
@@ -289,6 +291,11 @@
                             <input type="number" name="daily_limit" id="daily_limit" min="0" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm" placeholder="0">
                             <p class="mt-1 text-xs text-gray-500">{{ __('admin.ai_models.limit_help') }}</p>
                         </div>
+                        <div id="maxTokensField" class="{{ ($supportsModelMaxTokens ?? false) ? '' : 'hidden' }}">
+                            <label for="max_tokens" class="block text-sm font-medium text-gray-700">{{ __('admin.ai_models.field_max_tokens') }}</label>
+                            <input type="number" name="max_tokens" id="max_tokens" min="1" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm" placeholder="{{ __('admin.ai_models.max_tokens_placeholder', ['tokens' => (int) ($contentMaxTokens ?? 8192)]) }}">
+                            <p class="mt-1 text-xs text-gray-500">{{ __('admin.ai_models.max_tokens_help') }}</p>
+                        </div>
                         <div id="statusField" class="hidden">
                             <label for="status" class="block text-sm font-medium text-gray-700">{{ __('admin.ai_models.field_status') }}</label>
                             <select name="status" id="status" class="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
@@ -328,12 +335,14 @@
             testFailedPrefix: @json(__('admin.ai_models.test_failed_prefix')),
             testNetworkError: @json(__('admin.ai_models.test_network_error')),
         };
+        const SUPPORTS_MODEL_MAX_TOKENS = @json((bool) ($supportsModelMaxTokens ?? false));
         const UPDATE_URL_TEMPLATE = @json(route('admin.ai-models.update', ['modelId' => '__MODEL_ID__'], false));
         const DELETE_URL_TEMPLATE = @json(route('admin.ai-models.delete', ['modelId' => '__MODEL_ID__'], false));
         const TEST_URL_TEMPLATE = @json(route('admin.ai-models.test', ['modelId' => '__MODEL_ID__'], false));
 
         const PROVIDER_PRESETS = {
-            minimax: {name: 'MiniMax M2.7', version: 'M2.7', model_id: 'MiniMax-M2.7', api_url: 'https://api.minimax.io', model_type: 'chat'},
+            minimax: {name: 'MiniMax M3', version: 'M3', model_id: 'MiniMax-M3', api_url: 'https://api.minimax.io', model_type: 'chat'},
+            minimax_m27: {name: 'MiniMax M2.7', version: 'M2.7', model_id: 'MiniMax-M2.7', api_url: 'https://api.minimax.io', model_type: 'chat'},
             minimax_highspeed: {name: 'MiniMax M2.7 Highspeed', version: 'M2.7', model_id: 'MiniMax-M2.7-highspeed', api_url: 'https://api.minimax.io', model_type: 'chat'},
             openai: {name: 'GPT-4o', version: '', model_id: 'gpt-4o', api_url: 'https://api.openai.com', model_type: 'chat'},
             gemini: {name: 'Gemini 3 Flash Preview', version: 'v1beta', model_id: 'gemini-3-flash-preview', api_url: 'https://generativelanguage.googleapis.com/v1beta', model_type: 'chat'},
@@ -342,6 +351,7 @@
             volcengine_ark: {name: '火山方舟 Chat', version: 'v3', model_id: '', api_url: 'https://ark.cn-beijing.volces.com/api/v3', model_type: 'chat'},
             openai_embedding: {name: 'OpenAI Embedding 3 Small', version: '', model_id: 'text-embedding-3-small', api_url: 'https://api.openai.com', model_type: 'embedding'},
             gemini_embedding: {name: 'Gemini Embedding 2', version: 'v1beta', model_id: 'gemini-embedding-2', api_url: 'https://generativelanguage.googleapis.com/v1beta', model_type: 'embedding'},
+            volcengine_ark_embedding: {name: 'Doubao Embedding', version: 'v3', model_id: 'doubao-embedding-text-240515', api_url: 'https://ark.cn-beijing.volces.com/api/v3', model_type: 'embedding'},
             zhipu_embedding: {name: '智谱 Embedding-3', version: 'v4', model_id: 'embedding-3', api_url: 'https://open.bigmodel.cn/api/paas/v4', model_type: 'embedding'},
         };
 
@@ -358,6 +368,7 @@
             document.getElementById('apiKeyHelp').textContent = AI_MODELS_I18N.apiKeyHelpCreate;
             document.getElementById('api_url').value = 'https://api.deepseek.com';
             document.getElementById('failover_priority').value = 100;
+            syncMaxTokensVisibility();
             document.getElementById('modelModal').classList.remove('hidden');
         }
 
@@ -377,8 +388,10 @@
             document.getElementById('api_url').value = model.api_url || '';
             document.getElementById('failover_priority').value = model.failover_priority || 100;
             document.getElementById('daily_limit').value = model.daily_limit || 0;
+            document.getElementById('max_tokens').value = model.max_tokens ?? '';
             document.getElementById('status').value = model.status || 'active';
             document.getElementById('statusField').classList.remove('hidden');
+            syncMaxTokensVisibility();
             document.getElementById('modelModal').classList.remove('hidden');
         }
 
@@ -459,7 +472,27 @@
             document.getElementById('model_id').value = preset.model_id;
             document.getElementById('api_url').value = preset.api_url;
             document.getElementById('model_type').value = preset.model_type;
+            syncMaxTokensVisibility();
         }
+
+        function syncMaxTokensVisibility() {
+            const field = document.getElementById('maxTokensField');
+            const input = document.getElementById('max_tokens');
+            const modelType = document.getElementById('model_type')?.value || 'chat';
+            if (!field || !input) {
+                return;
+            }
+
+            const visible = SUPPORTS_MODEL_MAX_TOKENS && modelType === 'chat';
+            field.classList.toggle('hidden', !visible);
+            input.disabled = !visible;
+            if (!visible) {
+                input.value = '';
+            }
+        }
+
+        document.getElementById('model_type')?.addEventListener('change', syncMaxTokensVisibility);
+        syncMaxTokensVisibility();
 
         window.addEventListener('click', function (event) {
             const modal = document.getElementById('modelModal');

@@ -28,6 +28,15 @@ class AdminDashboardQuickStartTest extends TestCase
             ->assertOk()
             ->assertSee(__('admin.dashboard.navigation.single_site_title'))
             ->assertSee(__('admin.dashboard.navigation.multi_site_title'))
+            ->assertSee(__('admin.dashboard.automation.title'))
+            ->assertSee(__('admin.dashboard.automation.flow_title'))
+            ->assertSee(__('admin.dashboard.automation.recommendations_title'))
+            ->assertSee(__('admin.dashboard.automation.recommendations_empty'))
+            ->assertSee(__('admin.dashboard.automation.node_ai_title'))
+            ->assertSee(__('admin.dashboard.automation.node_distribution_title'))
+            ->assertSee(__('admin.dashboard.automation.lane_single_title'))
+            ->assertSee(__('admin.dashboard.automation.lane_multi_title'))
+            ->assertSee(__('admin.dashboard.automation.lane_feedback_title'))
             ->assertSee(__('admin.dashboard.navigation.ai_config_title'))
             ->assertSee(__('admin.dashboard.navigation.materials_title'))
             ->assertSee('配置素材库')
@@ -48,15 +57,6 @@ class AdminDashboardQuickStartTest extends TestCase
             ->assertSee(__('admin.dashboard.quick_start.api_title'))
             ->assertSee(__('admin.dashboard.quick_start.material_title'))
             ->assertSee(__('admin.dashboard.quick_start.task_title'))
-            ->assertDontSee(__('admin.dashboard.total_articles'))
-            ->assertDontSee(__('admin.dashboard.published'))
-            ->assertDontSee(__('admin.dashboard.ai_generated'))
-            ->assertDontSee(__('admin.dashboard.total_views'))
-            ->assertDontSee(__('admin.dashboard.active_tasks'))
-            ->assertDontSee(__('admin.dashboard.ai_models'))
-            ->assertDontSee(__('admin.dashboard.material_total'))
-            ->assertDontSee(__('admin.dashboard.pending_review'))
-            ->assertDontSee(__('admin.dashboard.todo_title'))
             ->assertDontSee(__('admin.dashboard.analytics_card_title'))
             ->assertDontSee(__('admin.dashboard.analytics_card_button'))
             ->assertDontSee(__('admin.dashboard.category_distribution'))
@@ -76,6 +76,7 @@ class AdminDashboardQuickStartTest extends TestCase
             ->assertSee(route('admin.tasks.create'), false)
             ->assertSee(route('admin.articles.index'), false)
             ->assertSee(route('admin.site-settings.index'), false)
+            ->assertSee(route('admin.dashboard'), false)
             ->assertSee(route('admin.analytics'), false)
             ->assertSee(route('admin.ai-prompts'), false)
             ->assertSee(route('admin.ai-special-prompts'), false)
@@ -88,11 +89,21 @@ class AdminDashboardQuickStartTest extends TestCase
             ->assertSee('https://github.com/yaojingang/yao-geo-skills/tree/main/skills/yao-geoflow-cli', false);
 
         $html = $response->getContent();
-        $this->assertSame(1, substr_count($html, route('admin.knowledge-bases.index')));
-        $this->assertSame(1, substr_count($html, route('admin.title-libraries.index')));
-        $this->assertSame(1, substr_count($html, route('admin.keyword-libraries.index')));
-        $this->assertSame(1, substr_count($html, route('admin.image-libraries.index')));
-        $this->assertSame(1, substr_count($html, route('admin.authors.index')));
+        $this->assertGreaterThanOrEqual(1, substr_count($html, route('admin.knowledge-bases.index')));
+        $this->assertGreaterThanOrEqual(1, substr_count($html, route('admin.title-libraries.index')));
+        $this->assertGreaterThanOrEqual(1, substr_count($html, route('admin.keyword-libraries.index')));
+        $this->assertGreaterThanOrEqual(1, substr_count($html, route('admin.image-libraries.index')));
+        $this->assertGreaterThanOrEqual(1, substr_count($html, route('admin.authors.index')));
+        $this->assertStringContainsString(__('admin.dashboard.automation.metric_materials', ['count' => 0]), $html);
+        $this->assertStringContainsString(__('admin.dashboard.automation.metric_vectorized', ['done' => 0, 'total' => 0]), $html);
+        $this->assertStringContainsString(__('admin.dashboard.automation.metric_ai_today', ['count' => 0]), $html);
+        $this->assertStringContainsString(__('admin.dashboard.automation.running_badge', ['count' => 0]), $html);
+        $this->assertStringContainsString(__('admin.dashboard.automation.attention_badge', ['count' => 0]), $html);
+        $this->assertStringContainsString(__('admin.dashboard.automation.health_task_meta', ['running' => 0, 'queued' => 0, 'failed' => 0]), $html);
+        $this->assertStringContainsString(__('admin.dashboard.automation.health_content_meta', ['published' => 0, 'drafts' => 0, 'pending' => 0]), $html);
+        $this->assertStringNotContainsString(__('admin.dashboard.automation.metric_materials', ['count' => 449]), $html);
+        $this->assertStringNotContainsString(__('admin.dashboard.automation.metric_vectorized', ['done' => 584, 'total' => 612]), $html);
+        $this->assertStringNotContainsString(__('admin.dashboard.automation.metric_ai_today', ['count' => 74]), $html);
     }
 
     public function test_welcome_modal_dismiss_url_is_relative_when_app_url_differs_from_origin(): void
@@ -119,5 +130,69 @@ class AdminDashboardQuickStartTest extends TestCase
         $this->assertStringContainsString($escapedDismissPath, $html);
         $this->assertStringNotContainsString('https:\/\/configured.example'.$escapedDismissPath, $html);
         $this->assertStringNotContainsString('https://configured.example'.$dismissPath, $html);
+    }
+
+    public function test_project_intro_auto_opens_once_and_footer_link_remains_available(): void
+    {
+        $admin = Admin::query()->create([
+            'username' => 'dashboard_project_intro_admin',
+            'password' => 'secret-123',
+            'email' => 'dashboard-project-intro@example.com',
+            'display_name' => 'Project Intro Admin',
+            'role' => 'super_admin',
+            'status' => 'active',
+        ]);
+
+        $firstResponse = $this->actingAs($admin, 'admin')
+            ->get(route('admin.dashboard'))
+            ->assertOk();
+
+        $firstHtml = $firstResponse->getContent();
+        $this->assertStringContainsString('data-open-admin-welcome', $firstHtml);
+        $this->assertStringContainsString('"shouldAutoOpen":true', $firstHtml);
+        $this->assertSame(
+            'intro:'.config('geoflow.welcome_intro_version'),
+            (string) $admin->fresh()?->welcome_seen_version
+        );
+
+        $secondHtml = $this->actingAs($admin->fresh(), 'admin')
+            ->get(route('admin.dashboard'))
+            ->assertOk()
+            ->getContent();
+
+        $this->assertStringContainsString('data-open-admin-welcome', $secondHtml);
+        $this->assertStringContainsString('"shouldAutoOpen":false', $secondHtml);
+        $this->assertStringContainsString(__('admin.footer.project_intro_link'), $secondHtml);
+    }
+
+    public function test_admin_footer_links_to_locale_specific_help_docs(): void
+    {
+        $admin = Admin::query()->create([
+            'username' => 'dashboard_help_docs_admin',
+            'password' => 'secret-123',
+            'email' => 'dashboard-help-docs@example.com',
+            'display_name' => 'Help Docs Admin',
+            'role' => 'super_admin',
+            'status' => 'active',
+        ]);
+
+        $zhHtml = $this->actingAs($admin, 'admin')
+            ->get(route('admin.dashboard'))
+            ->assertOk()
+            ->getContent();
+
+        $this->assertStringContainsString(__('admin.footer.help_docs_link'), $zhHtml);
+        $this->assertStringContainsString('https://github.com/yaojingang/GEOFlow/wiki', $zhHtml);
+        $this->assertStringNotContainsString('https://github.com/yaojingang/GEOFlow/wiki/Home-English', $zhHtml);
+
+        session(['locale' => 'en']);
+
+        $enHtml = $this->actingAs($admin->fresh(), 'admin')
+            ->get(route('admin.dashboard'))
+            ->assertOk()
+            ->getContent();
+
+        $this->assertStringContainsString('Help docs', $enHtml);
+        $this->assertStringContainsString('https://github.com/yaojingang/GEOFlow/wiki/Home-English', $enHtml);
     }
 }

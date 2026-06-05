@@ -15,7 +15,9 @@ use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\ValidationException;
 use Illuminate\Validation\Rules\File;
 use Illuminate\View\View;
 
@@ -92,22 +94,21 @@ class KnowledgeBaseController extends Controller
         ]);
 
         $content = trim((string) $payload['content']);
-        DB::transaction(function () use ($knowledgeBase, $payload, $content): void {
-            $knowledgeBase->update([
-                'name' => trim((string) $payload['name']),
-                'description' => trim((string) ($payload['description'] ?? '')),
-                'content' => $content,
-                'file_type' => (string) $payload['file_type'],
-                'character_count' => mb_strlen($content, 'UTF-8'),
-                'word_count' => mb_strlen(strip_tags($content), 'UTF-8'),
-            ]);
+        $knowledgeBase->update([
+            'name' => trim((string) $payload['name']),
+            'description' => trim((string) ($payload['description'] ?? '')),
+            'content' => $content,
+            'file_type' => (string) $payload['file_type'],
+            'character_count' => mb_strlen($content, 'UTF-8'),
+            'word_count' => mb_strlen(strip_tags($content), 'UTF-8'),
+        ]);
 
-            $this->chunkSyncService->sync((int) $knowledgeBase->id, $content);
-        });
-
-        return redirect()->route('admin.knowledge-bases.detail', ['knowledgeBaseId' => $knowledgeBaseId])->with(
-            'message',
-            __('admin.knowledge_bases.message.update_success', ['count' => $this->countChunks($knowledgeBaseId)])
+        return $this->redirectAfterChunkSync(
+            $knowledgeBase,
+            $content,
+            'admin.knowledge-bases.detail',
+            ['knowledgeBaseId' => $knowledgeBaseId],
+            'update_success'
         );
     }
 
@@ -116,56 +117,7 @@ class KnowledgeBaseController extends Controller
      */
     public function uploadFile(Request $request): RedirectResponse
     {
-        $request->validate([
-            'knowledge_file' => ['required', File::types(['txt', 'md', 'docx'])->max(10 * 1024)],
-            'name' => ['nullable', 'string', 'max:100'],
-            'description' => ['nullable', 'string'],
-        ], [
-            'knowledge_file.required' => __('admin.knowledge_bases.error.file_required'),
-        ]);
-
-        /** @var UploadedFile|null $knowledgeFile */
-        $knowledgeFile = $request->file('knowledge_file');
-        if (! $knowledgeFile instanceof UploadedFile) {
-            return back()->withErrors(__('admin.knowledge_bases.error.file_required'));
-        }
-
-        $storedRelativePath = '';
-        try {
-            $storedRelativePath = $this->storeUploadedKnowledgeFile($knowledgeFile);
-            $parsed = $this->parseUploadedKnowledgeFile(Storage::disk('local')->path($storedRelativePath), $knowledgeFile->getClientOriginalName());
-            $content = trim($parsed['content']);
-            if ($content === '') {
-                throw new \RuntimeException(__('admin.knowledge_bases.error.content_required'));
-            }
-
-            $knowledgeName = trim((string) $request->input('name', ''));
-            if ($knowledgeName === '') {
-                $knowledgeName = pathinfo((string) $knowledgeFile->getClientOriginalName(), PATHINFO_FILENAME);
-            }
-
-            $chunkCount = 0;
-            DB::transaction(function () use (&$chunkCount, $knowledgeName, $request, $content, $parsed, $storedRelativePath): void {
-                $knowledgeBase = KnowledgeBase::query()->create([
-                    'name' => $knowledgeName,
-                    'description' => trim((string) $request->input('description', '')),
-                    'content' => $content,
-                    'file_type' => $parsed['file_type'],
-                    'character_count' => mb_strlen($content, 'UTF-8'),
-                    'word_count' => mb_strlen(strip_tags($content), 'UTF-8'),
-                    'usage_count' => 0,
-                    'used_task_count' => 0,
-                    'file_path' => $storedRelativePath,
-                ]);
-                $chunkCount = $this->chunkSyncService->sync((int) $knowledgeBase->id, $content);
-            });
-
-            return redirect()->route('admin.knowledge-bases.index')->with('message', __('admin.knowledge_bases.message.upload_success', ['count' => $chunkCount]));
-        } catch (\Throwable $exception) {
-            $this->cleanupKnowledgeFile($storedRelativePath);
-
-            return back()->withErrors(__('admin.knowledge_bases.message.upload_error', ['message' => $exception->getMessage()]));
-        }
+        return $this->createKnowledgeBaseFromRequest($request, 'upload_success', 'upload_error');
     }
 
     /**
@@ -173,26 +125,7 @@ class KnowledgeBaseController extends Controller
      */
     public function store(Request $request): RedirectResponse
     {
-        $payload = $this->validateKnowledgeForm($request);
-
-        $content = trim((string) $payload['content']);
-        $knowledgeBase = KnowledgeBase::query()->create([
-            'name' => trim((string) $payload['name']),
-            'description' => trim((string) ($payload['description'] ?? '')),
-            'content' => $content,
-            'file_type' => (string) $payload['file_type'],
-            'character_count' => mb_strlen($content, 'UTF-8'),
-            'word_count' => mb_strlen(strip_tags($content), 'UTF-8'),
-            'usage_count' => 0,
-            'used_task_count' => 0,
-            'file_path' => '',
-        ]);
-
-        $chunkCount = $this->chunkSyncService->sync((int) $knowledgeBase->id, $content);
-
-        return redirect()
-            ->route('admin.knowledge-bases.index')
-            ->with('message', __('admin.knowledge_bases.message.create_success', ['count' => $chunkCount]));
+        return $this->createKnowledgeBaseFromRequest($request, 'create_success', 'create_error');
     }
 
     /**
@@ -213,6 +146,13 @@ class KnowledgeBaseController extends Controller
                 'description' => (string) ($knowledgeBase->description ?? ''),
                 'content' => (string) ($knowledgeBase->content ?? ''),
                 'file_type' => (string) ($knowledgeBase->file_type ?? 'markdown'),
+                'source_name' => (string) ($knowledgeBase->source_name ?? ''),
+                'source_url' => (string) ($knowledgeBase->source_url ?? ''),
+                'source_type' => (string) ($knowledgeBase->source_type ?? 'document'),
+                'business_line' => (string) ($knowledgeBase->business_line ?? ''),
+                'effective_date' => $knowledgeBase->effective_date?->toDateString() ?? '',
+                'risk_level' => (string) ($knowledgeBase->risk_level ?? 'medium'),
+                'review_status' => (string) ($knowledgeBase->review_status ?? 'unreviewed'),
             ],
             'chunkCount' => (int) $knowledgeBase->chunks()->count(),
         ]);
@@ -235,13 +175,15 @@ class KnowledgeBaseController extends Controller
             'file_type' => (string) $payload['file_type'],
             'character_count' => mb_strlen($content, 'UTF-8'),
             'word_count' => mb_strlen(strip_tags($content), 'UTF-8'),
-        ]);
+        ] + $this->knowledgeMetadataPayload($payload));
 
-        $chunkCount = $this->chunkSyncService->sync((int) $knowledgeBase->id, $content);
-
-        return redirect()
-            ->route('admin.knowledge-bases.index')
-            ->with('message', __('admin.knowledge_bases.message.update_success', ['count' => $chunkCount]));
+        return $this->redirectAfterChunkSync(
+            $knowledgeBase,
+            $content,
+            'admin.knowledge-bases.index',
+            [],
+            'update_success'
+        );
     }
 
     /**
@@ -363,7 +305,7 @@ class KnowledgeBaseController extends Controller
     /**
      * 校验知识库表单。
      *
-     * @return array{name:string,description:?string,content:string,file_type:string}
+     * @return array{name:string,description:?string,content:string,file_type:string,source_name:?string,source_url:?string,source_type:?string,business_line:?string,effective_date:?string,risk_level:?string,review_status:?string}
      */
     private function validateKnowledgeForm(Request $request): array
     {
@@ -372,9 +314,48 @@ class KnowledgeBaseController extends Controller
             'description' => ['nullable', 'string'],
             'content' => ['required', 'string'],
             'file_type' => ['required', 'in:markdown,word,text'],
+            'source_name' => ['nullable', 'string', 'max:150'],
+            'source_url' => ['nullable', 'string', 'max:500'],
+            'source_type' => ['nullable', 'in:document,website,business,faq,other'],
+            'business_line' => ['nullable', 'string', 'max:100'],
+            'effective_date' => ['nullable', 'date'],
+            'risk_level' => ['nullable', 'in:low,medium,high'],
+            'review_status' => ['nullable', 'in:unreviewed,reviewed'],
         ], [
             'name.required' => __('admin.knowledge_bases.error.name_required'),
             'content.required' => __('admin.knowledge_bases.error.content_required'),
+        ]);
+    }
+
+    /**
+     * 校验统一导入表单。
+     *
+     * @return array{name:?string,description:?string,content:?string,file_type:?string,source_name:?string,source_url:?string,source_type:?string,business_line:?string,effective_date:?string,risk_level:?string,review_status:?string}
+     */
+    private function validateKnowledgeImportForm(Request $request): array
+    {
+        return $request->validate([
+            'name' => ['nullable', 'string', 'max:100'],
+            'description' => ['nullable', 'string'],
+            'content' => ['nullable', 'string'],
+            'file_type' => ['nullable', 'in:markdown,word,text'],
+            'source_name' => ['nullable', 'string', 'max:150'],
+            'source_url' => ['nullable', 'string', 'max:500'],
+            'source_type' => ['nullable', 'in:document,website,business,faq,other'],
+            'business_line' => ['nullable', 'string', 'max:100'],
+            'effective_date' => ['nullable', 'date'],
+            'risk_level' => ['nullable', 'in:low,medium,high'],
+            'review_status' => ['nullable', 'in:unreviewed,reviewed'],
+            'import_action' => ['nullable', 'in:save,save_and_chunk'],
+            'knowledge_file' => ['nullable', File::types(['txt', 'md', 'docx'])->max(50 * 1024)],
+            'knowledge_files' => ['nullable', 'array', 'max:10'],
+            'knowledge_files.*' => ['file', File::types(['txt', 'md', 'docx'])->max(50 * 1024)],
+        ], [
+            'knowledge_file.mimes' => __('admin.knowledge_bases.error.file_type_invalid'),
+            'knowledge_file.max' => __('admin.knowledge_bases.error.file_too_large'),
+            'knowledge_files.max' => __('admin.knowledge_bases.error.files_limit'),
+            'knowledge_files.*.mimes' => __('admin.knowledge_bases.error.file_type_invalid'),
+            'knowledge_files.*.max' => __('admin.knowledge_bases.error.file_too_large'),
         ]);
     }
 
@@ -388,7 +369,155 @@ class KnowledgeBaseController extends Controller
             'description' => '',
             'content' => '',
             'file_type' => 'markdown',
+            'source_name' => '',
+            'source_url' => '',
+            'source_type' => 'document',
+            'business_line' => '',
+            'effective_date' => '',
+            'risk_level' => 'medium',
+            'review_status' => 'unreviewed',
         ];
+    }
+
+    /**
+     * @param  array<string,mixed>  $payload
+     * @return array{source_name:string,source_url:string,source_type:string,business_line:string,effective_date:?string,risk_level:string,review_status:string}
+     */
+    private function knowledgeMetadataPayload(array $payload): array
+    {
+        $sourceType = (string) ($payload['source_type'] ?? 'document');
+        $riskLevel = (string) ($payload['risk_level'] ?? 'medium');
+        $reviewStatus = (string) ($payload['review_status'] ?? 'unreviewed');
+
+        $metadata = [
+            'source_name' => trim((string) ($payload['source_name'] ?? '')),
+            'source_url' => trim((string) ($payload['source_url'] ?? '')),
+            'source_type' => in_array($sourceType, ['document', 'website', 'business', 'faq', 'other'], true) ? $sourceType : 'document',
+            'business_line' => trim((string) ($payload['business_line'] ?? '')),
+            'effective_date' => filled($payload['effective_date'] ?? null) ? (string) $payload['effective_date'] : null,
+            'risk_level' => in_array($riskLevel, ['low', 'medium', 'high'], true) ? $riskLevel : 'medium',
+            'review_status' => in_array($reviewStatus, ['unreviewed', 'reviewed'], true) ? $reviewStatus : 'unreviewed',
+        ];
+
+        return array_filter(
+            $metadata,
+            static fn (mixed $value, string $column): bool => Schema::hasColumn('knowledge_bases', $column),
+            ARRAY_FILTER_USE_BOTH
+        );
+    }
+
+    private function createKnowledgeBaseFromRequest(Request $request, string $successMessageKey, string $errorMessageKey): RedirectResponse
+    {
+        $payload = $this->validateKnowledgeImportForm($request);
+        $storedPaths = [];
+
+        try {
+            $manualContent = $this->normalizeKnowledgeText((string) ($payload['content'] ?? ''));
+            $uploadedFiles = $this->uploadedKnowledgeFiles($request);
+
+            if (count($uploadedFiles) > 10) {
+                throw ValidationException::withMessages([
+                    'knowledge_files' => __('admin.knowledge_bases.error.files_limit'),
+                ]);
+            }
+
+            if ($manualContent === '' && $uploadedFiles === []) {
+                throw ValidationException::withMessages([
+                    'content' => __('admin.knowledge_bases.error.content_required'),
+                    'knowledge_files' => __('admin.knowledge_bases.error.file_required'),
+                ]);
+            }
+
+            $parsedFiles = $this->parseUploadedKnowledgeFiles($uploadedFiles, $storedPaths);
+            $content = $this->mergeKnowledgeSources($manualContent, $parsedFiles);
+            if ($content === '') {
+                throw ValidationException::withMessages([
+                    'content' => __('admin.knowledge_bases.error.content_required'),
+                ]);
+            }
+
+            $knowledgeName = trim((string) ($payload['name'] ?? ''));
+            if ($knowledgeName === '') {
+                $knowledgeName = $this->inferKnowledgeName($uploadedFiles);
+            }
+            if ($knowledgeName === '') {
+                $knowledgeName = $this->inferKnowledgeNameFromContent($manualContent);
+            }
+            if ($knowledgeName === '') {
+                throw ValidationException::withMessages([
+                    'name' => __('admin.knowledge_bases.error.name_required'),
+                ]);
+            }
+
+            $fileType = $this->resolveKnowledgeFileType(
+                (string) ($payload['file_type'] ?? 'markdown'),
+                $manualContent,
+                $parsedFiles
+            );
+            $encodedFilePath = $this->encodeKnowledgeFilePaths($storedPaths);
+
+            $knowledgeBase = DB::transaction(function () use ($knowledgeName, $payload, $content, $fileType, $encodedFilePath): KnowledgeBase {
+                return KnowledgeBase::query()->create([
+                    'name' => $knowledgeName,
+                    'description' => trim((string) ($payload['description'] ?? '')),
+                    'content' => $content,
+                    'file_type' => $fileType,
+                    'character_count' => mb_strlen($content, 'UTF-8'),
+                    'word_count' => mb_strlen(strip_tags($content), 'UTF-8'),
+                    'usage_count' => 0,
+                    'used_task_count' => 0,
+                    'file_path' => $encodedFilePath,
+                ] + $this->knowledgeMetadataPayload($payload));
+            });
+
+            if (($payload['import_action'] ?? 'save_and_chunk') === 'save') {
+                return redirect()
+                    ->route('admin.knowledge-bases.index')
+                    ->with('message', __('admin.knowledge_bases.message.create_saved'));
+            }
+
+            return $this->redirectAfterChunkSync(
+                $knowledgeBase,
+                $content,
+                'admin.knowledge-bases.index',
+                [],
+                $successMessageKey
+            );
+        } catch (ValidationException $exception) {
+            $this->cleanupKnowledgeFiles($storedPaths);
+
+            throw $exception;
+        } catch (\Throwable $exception) {
+            $this->cleanupKnowledgeFiles($storedPaths);
+
+            return back()
+                ->withInput($request->except(['knowledge_file', 'knowledge_files']))
+                ->withErrors(__('admin.knowledge_bases.message.'.$errorMessageKey, ['message' => $exception->getMessage()]));
+        }
+    }
+
+    /**
+     * 保存知识库后再执行切片同步，避免外部模型调用占用数据库事务。
+     *
+     * @param  array<string, mixed>  $routeParameters
+     */
+    private function redirectAfterChunkSync(KnowledgeBase $knowledgeBase, string $content, string $routeName, array $routeParameters, string $successMessageKey): RedirectResponse
+    {
+        try {
+            $chunkCount = $this->chunkSyncService->sync((int) $knowledgeBase->id, $content);
+
+            return redirect()
+                ->route($routeName, $routeParameters)
+                ->with('message', __('admin.knowledge_bases.message.'.$successMessageKey, ['count' => $chunkCount]));
+        } catch (\Throwable $exception) {
+            return redirect()
+                ->route($routeName, $routeParameters)
+                ->withErrors([
+                    'chunk_sync' => __('admin.knowledge_bases.message.chunk_sync_deferred', [
+                        'message' => $exception->getMessage(),
+                    ]),
+                ]);
+        }
     }
 
     /**
@@ -461,14 +590,6 @@ class KnowledgeBaseController extends Controller
     }
 
     /**
-     * 统计指定知识库的 chunk 数，给提示文案使用。
-     */
-    private function countChunks(int $knowledgeBaseId): int
-    {
-        return KnowledgeChunk::query()->where('knowledge_base_id', $knowledgeBaseId)->count();
-    }
-
-    /**
      * 保存上传知识文件到本地路径。
      */
     private function storeUploadedKnowledgeFile(UploadedFile $file): string
@@ -482,6 +603,159 @@ class KnowledgeBaseController extends Controller
         }
 
         return $relativePath;
+    }
+
+    /**
+     * @return array<int, UploadedFile>
+     */
+    private function uploadedKnowledgeFiles(Request $request): array
+    {
+        $files = [];
+
+        /** @var UploadedFile|null $legacyFile */
+        $legacyFile = $request->file('knowledge_file');
+        if ($legacyFile instanceof UploadedFile) {
+            $files[] = $legacyFile;
+        }
+
+        $multiFiles = $request->file('knowledge_files', []);
+        if (is_array($multiFiles)) {
+            foreach ($multiFiles as $file) {
+                if ($file instanceof UploadedFile) {
+                    $files[] = $file;
+                }
+            }
+        }
+
+        return $files;
+    }
+
+    /**
+     * @param  array<int, UploadedFile>  $uploadedFiles
+     * @param  array<int, string>  $storedPaths
+     * @return array<int, array{content:string,file_type:string,original_name:string}>
+     */
+    private function parseUploadedKnowledgeFiles(array $uploadedFiles, array &$storedPaths): array
+    {
+        $parsedFiles = [];
+
+        foreach ($uploadedFiles as $uploadedFile) {
+            $storedRelativePath = $this->storeUploadedKnowledgeFile($uploadedFile);
+            $storedPaths[] = $storedRelativePath;
+            $parsed = $this->parseUploadedKnowledgeFile(
+                Storage::disk('local')->path($storedRelativePath),
+                $uploadedFile->getClientOriginalName()
+            );
+
+            $parsedFiles[] = [
+                'content' => $parsed['content'],
+                'file_type' => $parsed['file_type'],
+                'original_name' => (string) $uploadedFile->getClientOriginalName(),
+            ];
+        }
+
+        return $parsedFiles;
+    }
+
+    /**
+     * @param  array<int, array{content:string,file_type:string,original_name:string}>  $parsedFiles
+     */
+    private function mergeKnowledgeSources(string $manualContent, array $parsedFiles): string
+    {
+        if ($manualContent !== '' && $parsedFiles === []) {
+            return $manualContent;
+        }
+
+        $blocks = [];
+        if ($manualContent !== '') {
+            $blocks[] = "# 手动输入内容\n\n".$manualContent;
+        }
+
+        foreach ($parsedFiles as $parsedFile) {
+            $fileName = trim((string) $parsedFile['original_name']);
+            $blocks[] = '# 文件：'.$fileName."\n\n".trim((string) $parsedFile['content']);
+        }
+
+        return $this->normalizeKnowledgeText(implode("\n\n---\n\n", $blocks));
+    }
+
+    /**
+     * @param  array<int, UploadedFile>  $uploadedFiles
+     */
+    private function inferKnowledgeName(array $uploadedFiles): string
+    {
+        if ($uploadedFiles === []) {
+            return '';
+        }
+
+        $firstName = pathinfo((string) $uploadedFiles[0]->getClientOriginalName(), PATHINFO_FILENAME);
+        $firstName = trim($firstName);
+        if (count($uploadedFiles) === 1) {
+            return $firstName;
+        }
+
+        return $firstName === ''
+            ? __('admin.knowledge_bases.imported_multi_file_name', ['count' => count($uploadedFiles)])
+            : __('admin.knowledge_bases.imported_multi_file_name_with_first', [
+                'name' => $firstName,
+                'count' => count($uploadedFiles),
+            ]);
+    }
+
+    private function inferKnowledgeNameFromContent(string $content): string
+    {
+        $lines = preg_split('/\R/u', $content) ?: [];
+        foreach ($lines as $line) {
+            $candidate = trim((string) $line);
+            if ($candidate === '') {
+                continue;
+            }
+
+            $candidate = preg_replace('/^#{1,6}\s*/u', '', $candidate) ?? $candidate;
+            $candidate = preg_replace('/^[-*+]\s+/u', '', $candidate) ?? $candidate;
+            $candidate = trim(strip_tags($candidate));
+            $candidate = trim($candidate, " \t\n\r\0\x0B#*_`>");
+
+            if ($candidate !== '') {
+                return mb_substr($candidate, 0, 60, 'UTF-8');
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * @param  array<int, array{content:string,file_type:string,original_name:string}>  $parsedFiles
+     */
+    private function resolveKnowledgeFileType(string $requestedType, string $manualContent, array $parsedFiles): string
+    {
+        if ($parsedFiles === []) {
+            return in_array($requestedType, ['markdown', 'word', 'text'], true) ? $requestedType : 'markdown';
+        }
+
+        if ($manualContent !== '' || count($parsedFiles) > 1) {
+            return 'markdown';
+        }
+
+        $fileType = (string) ($parsedFiles[0]['file_type'] ?? 'markdown');
+
+        return in_array($fileType, ['markdown', 'word', 'text'], true) ? $fileType : 'markdown';
+    }
+
+    /**
+     * @param  array<int, string>  $storedPaths
+     */
+    private function encodeKnowledgeFilePaths(array $storedPaths): string
+    {
+        if ($storedPaths === []) {
+            return '';
+        }
+
+        if (count($storedPaths) === 1) {
+            return (string) $storedPaths[0];
+        }
+
+        return (string) json_encode(array_values($storedPaths), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     }
 
     /**
@@ -526,6 +800,39 @@ class KnowledgeBaseController extends Controller
      * 清理上传失败或删除后的知识文件。
      */
     private function cleanupKnowledgeFile(string $relativePath): void
+    {
+        $this->cleanupKnowledgeFiles($this->decodeKnowledgeFilePaths($relativePath));
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function decodeKnowledgeFilePaths(string $storedValue): array
+    {
+        $storedValue = trim($storedValue);
+        if ($storedValue === '') {
+            return [];
+        }
+
+        $decoded = json_decode($storedValue, true);
+        if (is_array($decoded)) {
+            return array_values(array_filter($decoded, static fn ($path): bool => is_string($path) && trim($path) !== ''));
+        }
+
+        return [$storedValue];
+    }
+
+    /**
+     * @param  array<int, string>  $relativePaths
+     */
+    private function cleanupKnowledgeFiles(array $relativePaths): void
+    {
+        foreach ($relativePaths as $relativePath) {
+            $this->deleteKnowledgeFilePath($relativePath);
+        }
+    }
+
+    private function deleteKnowledgeFilePath(string $relativePath): void
     {
         $relativePath = trim($relativePath);
         if ($relativePath === '') {

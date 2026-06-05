@@ -6,8 +6,10 @@ use App\Models\Admin;
 use App\Models\AiModel;
 use App\Models\SiteSetting;
 use App\Support\GeoFlow\ApiKeyCrypto;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
 class AdminAiModelsPageTest extends TestCase
@@ -51,6 +53,58 @@ class AdminAiModelsPageTest extends TestCase
             ->assertSee(__('admin.ai_models.test'));
     }
 
+    public function test_admin_models_page_works_before_max_tokens_migration_runs(): void
+    {
+        Schema::table('ai_models', function (Blueprint $table): void {
+            $table->dropColumn('max_tokens');
+        });
+
+        $this->createAiModel('chat');
+
+        $response = $this->actingAs($this->createAdmin(), 'admin')
+            ->get(route('admin.ai-models.index'));
+
+        $response->assertOk()
+            ->assertSee(__('admin.ai_models.list_title'));
+    }
+
+    public function test_admin_saves_max_tokens_only_for_chat_models(): void
+    {
+        $admin = $this->createAdmin();
+
+        $this->actingAs($admin, 'admin')
+            ->post(route('admin.ai-models.store'), [
+                'name' => 'Long Form Chat',
+                'version' => 'test',
+                'api_key' => 'test-api-key',
+                'model_id' => 'long-chat',
+                'model_type' => 'chat',
+                'api_url' => 'https://ai.test',
+                'failover_priority' => 100,
+                'daily_limit' => 0,
+                'max_tokens' => 12000,
+            ])
+            ->assertRedirect(route('admin.ai-models.index'));
+
+        $this->assertSame(12000, (int) AiModel::query()->where('model_id', 'long-chat')->value('max_tokens'));
+
+        $this->actingAs($admin, 'admin')
+            ->post(route('admin.ai-models.store'), [
+                'name' => 'Embedding Model',
+                'version' => 'test',
+                'api_key' => 'test-api-key',
+                'model_id' => 'embedding-model',
+                'model_type' => 'embedding',
+                'api_url' => 'https://ai.test',
+                'failover_priority' => 100,
+                'daily_limit' => 0,
+                'max_tokens' => 12000,
+            ])
+            ->assertRedirect(route('admin.ai-models.index'));
+
+        $this->assertNull(AiModel::query()->where('model_id', 'embedding-model')->value('max_tokens'));
+    }
+
     public function test_admin_can_test_embedding_model_connection(): void
     {
         Http::fake([
@@ -74,6 +128,37 @@ class AdminAiModelsPageTest extends TestCase
 
         Http::assertSent(fn ($request): bool => $request->url() === 'https://ai.test/v1/embeddings'
             && $request['model'] === 'test-embedding-model'
+            && $request['input'] === 'GEOFlow embedding connection test');
+    }
+
+    public function test_admin_can_test_volcengine_embedding_model_connection(): void
+    {
+        Http::fake([
+            'https://ark.cn-beijing.volces.com/api/v3/embeddings' => Http::response([
+                'data' => [
+                    ['embedding' => [0.11, 0.22, 0.33]],
+                ],
+            ]),
+        ]);
+
+        $model = $this->createAiModel('embedding', [
+            'name' => 'Doubao Embedding',
+            'model_id' => 'doubao-embedding-text-240515',
+            'api_url' => 'https://ark.cn-beijing.volces.com/api/v3',
+        ]);
+
+        $response = $this->actingAs($this->createAdmin(), 'admin')
+            ->postJson(route('admin.ai-models.test', ['modelId' => (int) $model->id]));
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('success', true)
+            ->assertJsonPath('meta.model_type', 'embedding')
+            ->assertJsonPath('meta.http_status', 200);
+
+        Http::assertSent(fn ($request): bool => $request->url() === 'https://ark.cn-beijing.volces.com/api/v3/embeddings'
+            && $request->hasHeader('Authorization', 'Bearer test-api-key')
+            && $request['model'] === 'doubao-embedding-text-240515'
             && $request['input'] === 'GEOFlow embedding connection test');
     }
 
@@ -181,14 +266,19 @@ class AdminAiModelsPageTest extends TestCase
             && ($request['generationConfig']['maxOutputTokens'] ?? 0) >= 64);
     }
 
-    public function test_admin_models_page_shows_gemini_quick_fill_and_embedding_notice(): void
+    public function test_admin_models_page_shows_embedding_quick_fill_presets_and_notice(): void
     {
         $response = $this->actingAs($this->createAdmin(), 'admin')
             ->get(route('admin.ai-models.index'));
 
         $response->assertOk()
+            ->assertSee('MiniMax-M3', false)
+            ->assertSee('MiniMax M2.7', false)
+            ->assertSee('MiniMax-M2.7-highspeed', false)
             ->assertSee('Gemini', false)
             ->assertSee('Gemini Embedding', false)
+            ->assertSee('Doubao Embedding', false)
+            ->assertSee('doubao-embedding-text-240515', false)
             ->assertSee(__('admin.ai_models.gemini_embedding_notice'));
     }
 

@@ -19,6 +19,8 @@ use App\Support\GeoFlow\ArticleWorkflow;
 use App\Support\GeoFlow\ImageUrlNormalizer;
 use App\Support\GeoFlow\OpenAiRuntimeProvider;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Laravel\Ai\Responses\Data\FinishReason;
 use RuntimeException;
 use Throwable;
 
@@ -33,6 +35,7 @@ class WorkerExecutionService
     public function __construct(
         private readonly ApiKeyCrypto $apiKeyCrypto,
         private readonly KnowledgeChunkSyncService $knowledgeChunkSyncService,
+        private readonly KnowledgeRetrievalService $knowledgeRetrievalService,
         private readonly DistributionOrchestrator $distributionOrchestrator
     ) {}
 
@@ -494,7 +497,12 @@ class WorkerExecutionService
             $renderedPrompt = $this->appendSmartPromptContext($renderedPrompt, $title, $keyword, $knowledgeContext);
         }
 
-        return trim($renderedPrompt)."\n\n".$this->finalPromptInstruction($renderedPrompt);
+        $finalInstructions = array_values(array_filter([
+            $this->knowledgeCitationInstruction($renderedPrompt, $knowledgeContext),
+            $this->finalPromptInstruction($renderedPrompt),
+        ], static fn (string $instruction): bool => trim($instruction) !== ''));
+
+        return trim($renderedPrompt)."\n\n".implode("\n", $finalInstructions);
     }
 
     private function promptHasKnownContextVariables(string $prompt): bool
@@ -589,6 +597,19 @@ class WorkerExecutionService
         return '请直接输出最终文章正文（Markdown），不要重复提示词、不要输出占位符。';
     }
 
+    private function knowledgeCitationInstruction(string $prompt, string $knowledgeContext): string
+    {
+        if (trim($knowledgeContext) === '') {
+            return '';
+        }
+
+        if ($this->isLikelyEnglishPrompt($prompt)) {
+            return 'Knowledge citation rule: when using facts, data, or business judgments from the reference knowledge, cite the evidence ID such as [K1] in the relevant sentence. If the evidence is insufficient, use cautious wording and do not invent sources or conclusions.';
+        }
+
+        return '知识库引用要求：涉及事实、数据或业务判断时，优先依据参考知识中的 [K1] 等证据编号，并在相关句子后标注证据编号；证据不足时不要编造来源或结论。';
+    }
+
     private function isLikelyEnglishPrompt(string $prompt): bool
     {
         preg_match_all('/\p{Han}/u', $prompt, $cjkMatches);
@@ -625,9 +646,14 @@ class WorkerExecutionService
         }
 
         $query = trim($title."\n".$keyword);
-        $context = $this->fetchKnowledgeContextFromChunks($knowledgeBaseId, $query, 4, 2400);
+        $context = $this->knowledgeRetrievalService->retrieveContext($knowledgeBaseId, $query, 5, 3200);
         if ($context !== '') {
             return $context;
+        }
+
+        $chunkCount = KnowledgeChunk::query()->where('knowledge_base_id', $knowledgeBaseId)->count();
+        if ($chunkCount > 0) {
+            return '';
         }
 
         return mb_strlen($content, 'UTF-8') > 2400 ? mb_substr($content, 0, 2400, 'UTF-8') : $content;
@@ -813,7 +839,7 @@ class WorkerExecutionService
 
         $driver = OpenAiRuntimeProvider::resolveChatDriver($providerUrl, (string) ($aiModel->model_id ?? ''));
         $providerName = OpenAiRuntimeProvider::registerProvider('worker', $driver, $providerUrl, $apiKey);
-        $agent = new MarkdownContentWriterAgent;
+        $agent = new MarkdownContentWriterAgent(maxTokens: $this->resolveMaxTokens($aiModel));
 
         try {
             $response = $agent->prompt($contentPrompt, [], $providerName, (string) ($aiModel->model_id ?? ''));
@@ -831,6 +857,8 @@ class WorkerExecutionService
             throw new RuntimeException('AI返回空正文');
         }
 
+        $this->warnIfContentLooksTruncated($content, $aiModel, $response);
+
         AiModel::query()->whereKey((int) $aiModel->id)->update([
             'used_today' => DB::raw('COALESCE(used_today,0)+1'),
             'total_used' => DB::raw('COALESCE(total_used,0)+1'),
@@ -838,6 +866,68 @@ class WorkerExecutionService
         ]);
 
         return $content;
+    }
+
+    /**
+     * 解析模型的最大输出 token 数：优先用模型自身配置，未配置时回退全局默认值。
+     */
+    private function resolveMaxTokens(AiModel $aiModel): int
+    {
+        $configured = (int) ($aiModel->max_tokens ?? 0);
+        if ($configured > 0) {
+            return $configured;
+        }
+
+        return max(256, (int) config('geoflow.content_max_tokens', 8192));
+    }
+
+    /**
+     * 检测生成正文是否疑似被模型截断（输出 token 用尽）。
+     *
+     * 仅记录告警便于排查，不阻断流程：典型信号是未闭合的代码围栏（``` 数量为奇数），
+     * 或正文结尾未落在正常的句末标点上。命中后提示调大该模型的 max_tokens。
+     */
+    private function warnIfContentLooksTruncated(string $content, AiModel $aiModel, object $response): void
+    {
+        $trimmed = rtrim($content);
+        if ($trimmed === '') {
+            return;
+        }
+
+        $maxTokens = $this->resolveMaxTokens($aiModel);
+        $completionTokens = (int) ($response->usage->completionTokens ?? 0);
+        $nearTokenLimit = $completionTokens > 0 && $completionTokens >= (int) floor($maxTokens * 0.92);
+        $lengthFinishReason = collect($response->steps ?? [])->contains(function (mixed $step): bool {
+            $finishReason = is_object($step) ? ($step->finishReason ?? null) : null;
+
+            return $finishReason === FinishReason::Length
+                || (is_string($finishReason) && $finishReason === FinishReason::Length->value)
+                || (is_object($finishReason) && property_exists($finishReason, 'value') && $finishReason->value === FinishReason::Length->value);
+        });
+
+        $fenceCount = substr_count($trimmed, '```');
+        $unclosedFence = ($fenceCount % 2) === 1;
+
+        $lastChar = mb_substr($trimmed, -1);
+        $allowedEndings = ['。', '！', '？', '.', '!', '?', '”', '"', '）', ')', '》', '`', '】', ']', '…', ':', '：', ';', '；', '-', '—'];
+        $hasAbruptTrailingText = $nearTokenLimit
+            && ! in_array($lastChar, $allowedEndings, true)
+            && preg_match('/[\p{L}\p{N}]$/u', $trimmed) === 1;
+
+        if (! $lengthFinishReason && ! $unclosedFence && ! $hasAbruptTrailingText) {
+            return;
+        }
+
+        Log::warning('GeoFlow 正文疑似被截断，建议调大该模型的 max_tokens', [
+            'ai_model_id' => (int) $aiModel->id,
+            'model_id' => (string) ($aiModel->model_id ?? ''),
+            'max_tokens' => $maxTokens,
+            'completion_tokens' => $completionTokens,
+            'content_length' => mb_strlen($trimmed),
+            'finish_reason_length' => $lengthFinishReason,
+            'unclosed_code_fence' => $unclosedFence,
+            'has_abrupt_trailing_text' => $hasAbruptTrailingText,
+        ]);
     }
 
     /**

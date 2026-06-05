@@ -83,6 +83,45 @@ class KnowledgeChunkEmbeddingSyncTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_sync_writes_knowledge_base_evidence_metadata_to_chunks(): void
+    {
+        Http::fake();
+
+        $knowledgeBase = KnowledgeBase::query()->create([
+            'name' => '证据化知识库',
+            'description' => '用于验证来源和治理元数据',
+            'content' => 'GEOFlow 知识库需要保留来源、业务线和审核状态。',
+            'character_count' => 28,
+            'file_type' => 'markdown',
+            'word_count' => 28,
+            'source_name' => 'GEOFlow 官方文档',
+            'source_url' => 'https://example.com/geoflow',
+            'source_type' => 'document',
+            'business_line' => 'GEO 内容工程',
+            'effective_date' => '2026-05-01',
+            'risk_level' => 'low',
+            'review_status' => 'reviewed',
+        ]);
+
+        app(KnowledgeChunkSyncService::class)->sync(
+            (int) $knowledgeBase->id,
+            "# 证据化知识库\n\nGEOFlow 知识库需要保留来源、业务线和审核状态。"
+        );
+
+        $chunk = $knowledgeBase->chunks()->firstOrFail();
+        $metadata = json_decode((string) $chunk->metadata_json, true);
+
+        $this->assertSame((int) $knowledgeBase->id, (int) ($metadata['knowledge_base_id'] ?? 0));
+        $this->assertSame('证据化知识库', (string) ($metadata['knowledge_base_name'] ?? ''));
+        $this->assertSame('GEOFlow 官方文档', (string) ($metadata['source_name'] ?? ''));
+        $this->assertSame('https://example.com/geoflow', (string) ($metadata['source_url'] ?? ''));
+        $this->assertSame('GEO 内容工程', (string) ($metadata['business_line'] ?? ''));
+        $this->assertSame('2026-05-01', (string) ($metadata['effective_date'] ?? ''));
+        $this->assertSame('low', (string) ($metadata['risk_level'] ?? ''));
+        $this->assertSame('reviewed', (string) ($metadata['review_status'] ?? ''));
+        Http::assertNothingSent();
+    }
+
     public function test_structured_rule_chunking_keeps_markdown_sections_separate(): void
     {
         Http::fake();
@@ -611,6 +650,147 @@ class KnowledgeChunkEmbeddingSyncTest extends TestCase
             && ! isset($request['taskType']));
     }
 
+    public function test_sync_uses_volcengine_doubao_embedding_as_openai_compatible_provider(): void
+    {
+        Http::fake([
+            'https://ark.cn-beijing.volces.com/api/v3/embeddings' => Http::response([
+                'data' => [
+                    ['embedding' => [0.21, 0.32, 0.43]],
+                ],
+            ]),
+        ]);
+
+        $model = $this->createEmbeddingModel([
+            'name' => 'Doubao Embedding',
+            'model_id' => 'doubao-embedding-text-240515',
+            'api_url' => 'https://ark.cn-beijing.volces.com/api/v3',
+        ]);
+        $knowledgeBase = KnowledgeBase::query()->create([
+            'name' => '火山向量知识库',
+            'description' => '',
+            'content' => 'GEOFlow 支持火山方舟 Doubao Embedding。',
+            'character_count' => 35,
+            'file_type' => 'markdown',
+            'word_count' => 35,
+        ]);
+
+        app(KnowledgeChunkSyncService::class)->sync(
+            (int) $knowledgeBase->id,
+            'GEOFlow 支持火山方舟 Doubao Embedding，适合国内环境下的知识库向量化。'
+        );
+
+        $chunk = $knowledgeBase->chunks()->firstOrFail();
+
+        $this->assertSame((int) $model->id, (int) $chunk->embedding_model_id);
+        $this->assertSame('ark.cn-beijing.volces.com', (string) $chunk->embedding_provider);
+        $this->assertSame([0.21, 0.32, 0.43], json_decode((string) $chunk->embedding_json, true));
+
+        Http::assertSent(fn ($request): bool => $request->url() === 'https://ark.cn-beijing.volces.com/api/v3/embeddings'
+            && $request->hasHeader('Authorization', 'Bearer test-api-key')
+            && $request['model'] === 'doubao-embedding-text-240515'
+            && ($request['input'][0] ?? '') === 'GEOFlow 支持火山方舟 Doubao Embedding，适合国内环境下的知识库向量化。'
+            && ! array_key_exists('dimensions', (array) $request->data()));
+    }
+
+    public function test_sync_omits_dimensions_parameter_for_openai_compatible_embedding(): void
+    {
+        Http::fake([
+            'https://ark.cn-beijing.volces.com/api/v3/embeddings' => function ($request) {
+                // 模拟 doubao-embedding-text 对 dimensions 参数返回 InvalidParameter，
+                // 验证我们的请求体不含该字段，从而不会触发该 400。
+                if (array_key_exists('dimensions', (array) $request->data())) {
+                    return Http::response([
+                        'error' => [
+                            'code' => 'InvalidParameter',
+                            'message' => 'One or more parameters specified in the request are not valid.',
+                        ],
+                    ], 400);
+                }
+
+                return Http::response([
+                    'data' => [
+                        ['embedding' => [0.51, 0.52, 0.53]],
+                    ],
+                ]);
+            },
+        ]);
+
+        $model = $this->createEmbeddingModel([
+            'name' => 'Doubao Embedding',
+            'model_id' => 'doubao-embedding-text-240515',
+            'api_url' => 'https://ark.cn-beijing.volces.com/api/v3',
+        ]);
+        $knowledgeBase = KnowledgeBase::query()->create([
+            'name' => 'Doubao 维度参数知识库',
+            'description' => '',
+            'content' => '',
+            'character_count' => 0,
+            'file_type' => 'markdown',
+            'word_count' => 0,
+        ]);
+
+        app(KnowledgeChunkSyncService::class)->sync(
+            (int) $knowledgeBase->id,
+            'GEOFlow 校验 Doubao Embedding 不发送 dimensions 参数。',
+            true
+        );
+
+        $chunk = $knowledgeBase->chunks()->firstOrFail();
+
+        $this->assertSame((int) $model->id, (int) $chunk->embedding_model_id);
+        $this->assertSame([0.51, 0.52, 0.53], json_decode((string) $chunk->embedding_json, true));
+
+        Http::assertSent(fn ($request): bool => $request->url() === 'https://ark.cn-beijing.volces.com/api/v3/embeddings'
+            && ! array_key_exists('dimensions', (array) $request->data()));
+    }
+
+    public function test_sync_maps_openai_compatible_embedding_response_by_index(): void
+    {
+        config(['geoflow.embedding_batch_size' => 3]);
+
+        Http::fake([
+            'https://ai.test/v1/embeddings' => Http::response([
+                'data' => [
+                    ['index' => 2, 'embedding' => [0.31, 0.32, 0.33]],
+                    ['index' => 0, 'embedding' => [0.11, 0.12, 0.13]],
+                    ['index' => 1, 'embedding' => [0.21, 0.22, 0.23]],
+                ],
+            ]),
+        ]);
+
+        $model = $this->createEmbeddingModel();
+        $knowledgeBase = KnowledgeBase::query()->create([
+            'name' => '响应顺序知识库',
+            'description' => '',
+            'content' => '',
+            'character_count' => 0,
+            'file_type' => 'markdown',
+            'word_count' => 0,
+        ]);
+
+        app(KnowledgeChunkSyncService::class)->sync(
+            (int) $knowledgeBase->id,
+            "# 第一节\n\n第一节内容。\n\n## 第二节\n\n第二节内容。\n\n## 第三节\n\n第三节内容。",
+            true
+        );
+
+        $vectors = $knowledgeBase->chunks()
+            ->orderBy('chunk_index')
+            ->get()
+            ->map(fn ($chunk): array => json_decode((string) $chunk->embedding_json, true))
+            ->all();
+
+        $this->assertSame([
+            [0.11, 0.12, 0.13],
+            [0.21, 0.22, 0.23],
+            [0.31, 0.32, 0.33],
+        ], $vectors);
+
+        $model->refresh();
+        $this->assertSame(1, (int) $model->used_today);
+        $this->assertSame(1, (int) $model->total_used);
+    }
+
     public function test_sync_splits_embedding_requests_into_configured_batch_size(): void
     {
         config(['geoflow.embedding_batch_size' => 3]);
@@ -740,6 +920,44 @@ class KnowledgeChunkEmbeddingSyncTest extends TestCase
             && ($request['requests'][0]['content']['parts'][0]['text'] ?? '') === 'task: search result | query: 如何使用 GEOFlow?'
             && ! isset($request['requests'][0]['taskType'])
             && ! isset($request['taskType']));
+    }
+
+    public function test_query_embedding_omits_dimensions_parameter_for_openai_compatible_embedding(): void
+    {
+        Http::fake([
+            'https://ark.cn-beijing.volces.com/api/v3/embeddings' => function ($request) {
+                if (array_key_exists('dimensions', (array) $request->data())) {
+                    return Http::response([
+                        'error' => [
+                            'code' => 'InvalidParameter',
+                            'message' => 'dimensions is not supported',
+                        ],
+                    ], 400);
+                }
+
+                return Http::response([
+                    'data' => [
+                        ['index' => 0, 'embedding' => [0.61, 0.62, 0.63]],
+                    ],
+                ]);
+            },
+        ]);
+
+        $this->createEmbeddingModel([
+            'name' => 'Doubao Embedding',
+            'model_id' => 'doubao-embedding-text-240515',
+            'api_url' => 'https://ark.cn-beijing.volces.com/api/v3',
+        ]);
+
+        $vector = app(KnowledgeChunkSyncService::class)->generateQueryEmbeddingVector('GEOFlow 知识库如何向量化？');
+
+        $this->assertSame([0.61, 0.62, 0.63], $vector);
+
+        Http::assertSent(fn ($request): bool => $request->url() === 'https://ark.cn-beijing.volces.com/api/v3/embeddings'
+            && $request->hasHeader('Authorization', 'Bearer test-api-key')
+            && $request['model'] === 'doubao-embedding-text-240515'
+            && ($request['input'][0] ?? '') === 'GEOFlow 知识库如何向量化？'
+            && ! array_key_exists('dimensions', (array) $request->data()));
     }
 
     private function createEmbeddingModel(array $overrides = []): AiModel

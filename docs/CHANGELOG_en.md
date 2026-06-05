@@ -2,6 +2,63 @@
 
 This document tracks user-facing updates in the public repository. For future GitHub pushes, update this file together with the Chinese version in `CHANGELOG.md`.
 
+## 2026-06-02
+
+### v2.0.4
+
+- Fixed stale admin versions after code updates in deployed environments: the admin version now defaults to local `version.json`, and environment examples no longer write `GEOFLOW_APP_VERSION`.
+- Updated the admin version to `2.0.4`, including `version.json` and default admin version display values.
+
+### v2.0.3
+
+- Added the System Update Center:
+  - The admin notification area now links to a dedicated System Update Center with current version, latest GitHub version, repository links, changelog links, and last-check time.
+  - GitHub `version.json` metadata is used to detect and display newer versions in the admin.
+- Added update planning, preflight checks, and manual command previews:
+  - Admins can generate update plans from remote release archives and review added, modified, deleted, migration, dependency, and manual-step changes.
+  - Preflight checks cover repository trust, archive size, file paths, disk space, worktree state, backup state, and execution switches.
+  - The admin shows copyable manual command lists and does not execute host shell commands by default.
+- Added backup and rollback flow:
+  - Files scheduled for replacement are backed up before update, with manifest, source version, target version, file count, and backup path recorded.
+  - Supports single-file restore, full rollback, rollback preflight checks, and a keep-last-10 backup policy.
+  - Rollback execution is protected by environment switches and super-admin password checks by default.
+- Added queued update execution and recovery:
+  - Updates and rollbacks run through the background queue with stages, timeline entries, logs, verification commands, and failure reasons.
+  - Includes status polling, stale-run warnings, failed-run retry, and manual failure marking.
+  - File verification before apply reduces partial replacement and concurrent update risks.
+- Added deployment diagnostics and self-recovery guidance:
+  - System Update Center now checks APP_URL, APP_KEY, database connectivity, migrations table, and writable `storage/app` / `bootstrap/cache` paths.
+  - Shows runtime configuration, Laravel log summaries, and deployment-mode-specific command guidance.
+  - Added Ubuntu 24.04 LTS + Docker production troubleshooting docs for initialization commands, `.env.prod` checks, container logs, and 500 errors.
+- Updated the admin version to `2.0.3`, including `version.json` and default admin version display values.
+
+## 2026-05-30
+
+### Distribution Management
+
+- Added Generic HTTP API distribution channels:
+  - Supports no auth, Bearer Token, Basic Auth, custom Header Key, and HMAC signatures.
+  - Supports per-action HTTP methods and paths for health checks, publish, update, delete, and site-settings sync.
+  - Supports `remote_id` / `remote_url` response mapping, success-status configuration, payload wrapping, and request timeout settings.
+  - Generic API channels reuse the existing distribution queue, retries, logs, remote article edit/delete actions, and site-settings sync flow.
+- Distribution channel detail pages now show Generic API onboarding, response-mapping summaries, and a sample payload for third-party receivers.
+- README and localized READMEs now describe the Generic HTTP API channel capability.
+
+## 2026-05-28
+
+### v2.0.2
+
+- Upgraded the admin dashboard into a GEOFlow automation workflow panel:
+  - Shows how APIs, material libraries, tasks, articles, distribution, Analytics, and site settings connect in the automated production flow.
+  - Keeps the three-step setup guide and companion Skill shortcuts while removing duplicated dashboard metric cards.
+- Improved Analytics data accuracy:
+  - Total views, viewed content, top content, and log analytics now prefer `view_logs` event data and filter out non-GET requests.
+  - Publishing trends use actual `published_at` timestamps, and distribution metrics respect task/category filters through related articles.
+  - AI crawler, search bot, other automation, and human traffic classification now share one rule set to reduce misclassification.
+- Improved local Docker development behavior:
+  - The development image disables CLI OPcache so mounted code updates are reflected without stale admin pages.
+- Updated the admin version to `2.0.2`, including `version.json`, environment examples, and default admin version display values.
+
 ## 2026-05-24
 
 ### AI Models and Knowledge Bases

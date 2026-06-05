@@ -25,6 +25,7 @@ use App\Http\Controllers\Admin\LegacyController;
 use App\Http\Controllers\Admin\MaterialsController;
 use App\Http\Controllers\Admin\SecuritySettingsController;
 use App\Http\Controllers\Admin\SiteSettingsController;
+use App\Http\Controllers\Admin\SystemUpdateController;
 use App\Http\Controllers\Admin\TaskController;
 use App\Http\Controllers\Admin\TitleLibraryController;
 use App\Http\Controllers\Admin\UrlImportController;
@@ -70,6 +71,24 @@ Route::prefix($adminPrefix)->name('admin.')->middleware(['admin.locale'])->group
         Route::post('welcome/dismiss', [AdminWelcomeController::class, 'dismiss'])->name('welcome.dismiss');
         Route::get('dashboard', [DashboardController::class, 'index'])->name('dashboard');
         Route::get('analytics', [AnalyticsController::class, 'index'])->name('analytics');
+
+        Route::prefix('system-updates')->name('system-updates.')->group(function () {
+            Route::get('/', [SystemUpdateController::class, 'index'])->name('index');
+            Route::post('check', [SystemUpdateController::class, 'check'])->name('check');
+            Route::get('runs/status', [SystemUpdateController::class, 'runsStatus'])->name('runs.status');
+            Route::get('runs/{runUuid}', [SystemUpdateController::class, 'runShow'])->name('runs.show');
+            Route::post('runs/{runUuid}/retry', [SystemUpdateController::class, 'retryRun'])->name('runs.retry');
+            Route::post('runs/{runUuid}/mark-failed', [SystemUpdateController::class, 'markRunFailed'])->name('runs.mark-failed');
+            Route::post('plan', [SystemUpdateController::class, 'plan'])->name('plan');
+            Route::post('backup', [SystemUpdateController::class, 'backup'])->name('backup');
+            Route::post('apply', [SystemUpdateController::class, 'apply'])->name('apply');
+            Route::post('plans/{runUuid}/commands/{commandIndex}/executed', [SystemUpdateController::class, 'markCommandExecuted'])
+                ->whereNumber('commandIndex')
+                ->name('commands.executed');
+            Route::get('backups/{backupUuid}', [SystemUpdateController::class, 'backupShow'])->name('backups.show');
+            Route::post('backups/{backupUuid}/files/rollback', [SystemUpdateController::class, 'rollbackFile'])->name('rollback-file');
+            Route::post('backups/{backupUuid}/rollback', [SystemUpdateController::class, 'rollback'])->name('rollback');
+        });
 
         // 任务管理（Blade 新路径）
         Route::prefix('tasks')->name('tasks.')->group(function () {
