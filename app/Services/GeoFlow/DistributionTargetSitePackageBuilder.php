@@ -67,6 +67,7 @@ class DistributionTargetSitePackageBuilder
             'seo_description_template' => $siteSettings['seo_description_template'],
             'featured_limit' => $siteSettings['featured_limit'],
             'per_page' => $siteSettings['per_page'],
+            'article_text_ads' => method_exists($channel, 'effectiveArticleTextAds') ? $channel->effectiveArticleTextAds() : [],
             'active_theme' => (string) ($channel->template_key ?? ''),
             'front_mode' => $frontMode,
             'static_publish_enabled' => $staticPublishEnabled,
@@ -93,6 +94,7 @@ class DistributionTargetSitePackageBuilder
             ."    'seo_description_template' => ".var_export($config['seo_description_template'], true).",\n"
             ."    'featured_limit' => ".$config['featured_limit'].",\n"
             ."    'per_page' => ".$config['per_page'].",\n"
+            ."    'article_text_ads' => ".var_export($config['article_text_ads'], true).",\n"
             ."    'active_theme' => ".var_export($config['active_theme'], true).",\n"
             ."    'front_mode' => ".var_export($config['front_mode'], true).",\n"
             ."    'static_publish_enabled' => ".($config['static_publish_enabled'] ? 'true' : 'false').",\n"
@@ -154,15 +156,94 @@ HTACCESS;
         $settings['active_theme'] = (string) ($channel->template_key ?? '');
         $themeClass = $this->targetThemeClass($settings);
         $assetVersion = $this->targetAssetVersion($channel);
+        $seo = $this->initialSeoPayload($channel, $settings, '首页');
 
-        return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            .'<title>'.htmlspecialchars('首页 - '.$siteName, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8').'</title>'
-            .'<meta name="description" content="'.htmlspecialchars($description, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8').'">'
+        $head = '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            .'<title>'.$this->h($seo['page_title']).'</title>'
+            .'<meta name="description" content="'.$this->h($seo['description']).'">';
+        if ($seo['keywords'] !== '') {
+            $head .= '<meta name="keywords" content="'.$this->h($seo['keywords']).'">';
+        }
+        if ($seo['canonical_url'] !== '') {
+            $head .= '<link rel="canonical" href="'.$this->h($seo['canonical_url']).'">';
+        }
+        $head .= '<meta property="og:title" content="'.$this->h($seo['page_title']).'">'
+            .'<meta property="og:description" content="'.$this->h($seo['description']).'">'
+            .'<meta property="og:type" content="'.$this->h($seo['og_type']).'">';
+        if ($seo['canonical_url'] !== '') {
+            $head .= '<meta property="og:url" content="'.$this->h($seo['canonical_url']).'">';
+        }
+        if ($siteName !== '') {
+            $head .= '<meta property="og:site_name" content="'.$this->h($siteName).'">';
+        }
+        if ((string) ($settings['site_favicon'] ?? '') !== '') {
+            $head .= '<link rel="icon" href="'.$this->h((string) $settings['site_favicon']).'">';
+        }
+
+        return $head
             .'<link rel="stylesheet" href="assets/css/site.css?v='.$assetVersion.'"><script defer src="assets/js/site.js?v='.$assetVersion.'"></script>'
-            .'</head><body class="'.htmlspecialchars($themeClass, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8').'"><header><div class="wrap bar"><div class="brand">'.htmlspecialchars($siteName, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8').'</div></div></header><main class="wrap">'
-            .'<section class="hero"><h1>'.htmlspecialchars($siteName, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8').'</h1><p>'.htmlspecialchars($description, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8').'</p></section>'
+            .'</head><body class="'.$this->h($themeClass).'"><header><div class="wrap bar"><div class="brand">'.$this->h($siteName).'</div></div></header><main class="wrap">'
+            .'<section class="hero"><h1>'.$this->h($siteName).'</h1><p>'.$this->h($description).'</p></section>'
             .'<div class="empty">暂无文章。请先从 GEOFlow 发布一篇绑定此渠道的文章。</div></main>'
-            .'<footer><div class="wrap">'.htmlspecialchars($copyright, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8').'</div></footer></body></html>';
+            .'<footer><div class="wrap">'.$this->h($copyright).'</div></footer></body></html>';
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     * @return array{page_title:string,description:string,keywords:string,canonical_url:string,og_type:string}
+     */
+    private function initialSeoPayload(DistributionChannel $channel, array $settings, string $title): array
+    {
+        $siteName = (string) ($settings['site_name'] ?? '');
+        $titleTemplate = (string) ($settings['seo_title_template'] ?? '{title} - {site_name}');
+        $descriptionTemplate = (string) ($settings['seo_description_template'] ?? '{description}');
+        $description = (string) ($settings['site_description'] ?? '');
+        $keywords = (string) ($settings['site_keywords'] ?? '');
+        $canonicalUrl = $this->initialCanonicalUrl($channel);
+
+        return [
+            'page_title' => $this->renderInitialTemplateString($titleTemplate, [
+                'title' => $title,
+                'site_name' => $siteName,
+                'category' => '',
+            ]),
+            'description' => $this->renderInitialTemplateString($descriptionTemplate, [
+                'description' => $description,
+                'site_name' => $siteName,
+                'keywords' => $keywords,
+            ]),
+            'keywords' => $keywords,
+            'canonical_url' => $canonicalUrl,
+            'og_type' => 'website',
+        ];
+    }
+
+    private function initialCanonicalUrl(DistributionChannel $channel): string
+    {
+        $base = trim((string) $channel->endpoint_url);
+        if ($base === '') {
+            $domain = trim((string) $channel->domain);
+            $base = $domain !== '' ? 'https://'.$domain : '';
+        }
+
+        return $base !== '' ? $this->publicFrontBaseUrl($base).'/' : '';
+    }
+
+    /**
+     * @param  array<string, string>  $vars
+     */
+    private function renderInitialTemplateString(string $template, array $vars): string
+    {
+        foreach ($vars as $key => $value) {
+            $template = str_replace('{'.$key.'}', $value, $template);
+        }
+
+        return trim($template);
+    }
+
+    private function h(string $value): string
+    {
+        return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     }
 
     /**
@@ -266,6 +347,7 @@ h2{font-size:22px;margin:0 0 10px}h2 a{color:#111827;text-decoration:none}h2 a:h
 .content img{display:block;max-width:100%;height:auto;border-radius:8px;margin:24px auto}.content blockquote{margin:1.4em 0;padding:14px 18px;border-left:4px solid #dbeafe;background:#f8fafc;color:#374151}
 .content pre{overflow:auto;border-radius:8px;background:#111827;color:#f9fafb;padding:16px;margin:1.4em 0}.content code{border-radius:4px;background:#f3f4f6;padding:2px 5px;font-size:.92em}.content pre code{background:transparent;padding:0;color:inherit}
 .content .article-table-wrap{overflow-x:auto;margin:1.4em 0;border:1px solid #e5e7eb;border-radius:8px}.content .article-table{width:100%;border-collapse:collapse;background:#fff}.content .article-table th,.content .article-table td{border-bottom:1px solid #e5e7eb;padding:10px 12px;text-align:left;vertical-align:top}.content .article-table th{background:#f9fafb;color:#111827;font-weight:700}
+.article-text-ads{display:grid;gap:10px;margin:18px 0;padding:12px 0;border-top:1px solid rgba(148,163,184,.26);border-bottom:1px solid rgba(148,163,184,.26);background:transparent;font:inherit}.article-text-ads--content-top{margin-top:0;margin-bottom:22px}.article-text-ads--content-bottom{margin-top:26px;margin-bottom:0}.article-text-ad-module{display:flex;flex-direction:column;gap:6px;background:transparent}.article-text-ad-link{display:inline-flex;align-items:center;width:max-content;max-width:100%;color:var(--article-text-ad-color,#2563eb);font:inherit;font-weight:700;line-height:1.65;text-decoration:none}.article-text-ad-link:hover{text-decoration:underline;text-underline-offset:4px}.article-text-ad-text{overflow-wrap:anywhere}
 .tags{display:flex;flex-wrap:wrap;gap:8px;margin-top:28px;padding-top:22px;border-top:1px solid #e5e7eb}.tags span{display:inline-flex;border:1px solid #e5e7eb;background:#f9fafb;color:#4b5563;border-radius:999px;padding:5px 10px;font-size:13px}
 .empty{padding:52px;text-align:center;color:#6b7280}.back{display:inline-block;margin:28px 0 18px;color:#4b5563;text-decoration:none}
 footer{border-top:1px solid #e5e7eb;color:#6b7280;font-size:13px;padding:24px 0 36px}
@@ -378,6 +460,169 @@ function imageAssetsDir(array $config): string
     return staticRoot($config).'/assets/images';
 }
 
+function normalizeArticleTextAdUrl(string $url): string
+{
+    $normalized = trim($url);
+    if ($normalized === '' || str_starts_with($normalized, '//')) {
+        return '';
+    }
+
+    if (str_starts_with($normalized, '/')) {
+        return $normalized;
+    }
+
+    if (preg_match('#^https?://#i', $normalized) === 1) {
+        return $normalized;
+    }
+
+    if (preg_match('#^[a-z][a-z0-9+.-]*:#i', $normalized) === 1) {
+        return '';
+    }
+
+    return '/'.ltrim($normalized, '/');
+}
+
+function normalizeArticleTextAdColor(string $color): string
+{
+    $color = trim($color);
+    if (preg_match('/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/', $color) !== 1) {
+        return '#2563eb';
+    }
+
+    $hex = ltrim(strtolower($color), '#');
+    if (strlen($hex) === 3) {
+        $hex = $hex[0].$hex[0].$hex[1].$hex[1].$hex[2].$hex[2];
+    }
+
+    return '#'.$hex;
+}
+
+function normalizeArticleTextAdTrackingParam(string $trackingParam): string
+{
+    $trackingParam = ltrim(trim($trackingParam), "? \t\n\r\0\x0B");
+    if (
+        $trackingParam === ''
+        || strlen($trackingParam) > 250
+        || str_contains($trackingParam, '://')
+        || str_starts_with($trackingParam, '/')
+        || preg_match('/^[A-Za-z0-9._~%=&+;,:@-]+$/', $trackingParam) !== 1
+    ) {
+        return '';
+    }
+
+    return $trackingParam;
+}
+
+function normalizeArticleTextAdLinks(mixed $links, bool $enabledOnly = false, int $maxLinks = 10): array
+{
+    if (! is_array($links)) {
+        return [];
+    }
+
+    $normalized = [];
+    foreach ($links as $link) {
+        if (! is_array($link)) {
+            continue;
+        }
+
+        $text = trim((string) ($link['text'] ?? ''));
+        $url = normalizeArticleTextAdUrl((string) ($link['url'] ?? ''));
+        if ($text === '' || $url === '') {
+            continue;
+        }
+
+        $enabled = ! empty($link['enabled']);
+        if ($enabledOnly && ! $enabled) {
+            continue;
+        }
+
+        $normalized[] = [
+            'id' => trim((string) ($link['id'] ?? '')),
+            'text' => $text,
+            'url' => $url,
+            'text_color' => normalizeArticleTextAdColor((string) ($link['text_color'] ?? '#2563eb')),
+            'open_new_tab' => ! empty($link['open_new_tab']),
+            'tracking_enabled' => ! empty($link['tracking_enabled']),
+            'tracking_param' => normalizeArticleTextAdTrackingParam((string) ($link['tracking_param'] ?? '')),
+            'enabled' => $enabled,
+            'sort_order' => (int) ($link['sort_order'] ?? count($normalized) * 10),
+        ];
+    }
+
+    usort($normalized, static fn (array $a, array $b): int => ((int) $a['sort_order']) <=> ((int) $b['sort_order']));
+
+    return array_slice(array_values($normalized), 0, max(0, $maxLinks));
+}
+
+function legacyArticleTextAdToLink(array $ad): array
+{
+    return [
+        'id' => trim((string) ($ad['id'] ?? '')),
+        'text' => trim((string) ($ad['text'] ?? '')),
+        'url' => (string) ($ad['url'] ?? ''),
+        'text_color' => (string) ($ad['text_color'] ?? '#2563eb'),
+        'open_new_tab' => ! empty($ad['open_new_tab']),
+        'tracking_enabled' => ! empty($ad['tracking_enabled']),
+        'tracking_param' => (string) ($ad['tracking_param'] ?? ''),
+        'enabled' => ! empty($ad['enabled']),
+        'sort_order' => (int) ($ad['sort_order'] ?? 0),
+    ];
+}
+
+function normalizeArticleTextAds(mixed $ads, bool $enabledOnly = false, int $maxModules = 30): array
+{
+    if (! is_array($ads)) {
+        return [];
+    }
+
+    $normalized = [];
+    foreach ($ads as $ad) {
+        if (! is_array($ad)) {
+            continue;
+        }
+
+        $placement = (string) ($ad['placement'] ?? 'content_top');
+        if (! in_array($placement, ['content_top', 'content_bottom'], true)) {
+            continue;
+        }
+
+        $enabled = ! empty($ad['enabled']);
+        if ($enabledOnly && ! $enabled) {
+            continue;
+        }
+
+        $links = normalizeArticleTextAdLinks(
+            is_array($ad['links'] ?? null) ? $ad['links'] : [legacyArticleTextAdToLink($ad)],
+            $enabledOnly
+        );
+        if ($links === []) {
+            continue;
+        }
+
+        $id = trim((string) ($ad['id'] ?? ''));
+        $name = trim((string) ($ad['name'] ?? ''));
+        $sortOrder = (int) ($ad['sort_order'] ?? count($normalized) * 10);
+
+        $normalized[] = [
+            'schema_version' => 2,
+            'id' => $id !== '' ? $id : 'article_text_module_'.md5($placement.'|'.$name.'|'.$sortOrder.'|'.json_encode($links)),
+            'name' => $name !== '' ? $name : (string) ($links[0]['text'] ?? 'Text Ad Module'),
+            'placement' => $placement,
+            'enabled' => $enabled,
+            'sort_order' => $sortOrder,
+            'links' => $links,
+        ];
+    }
+
+    usort($normalized, static function (array $a, array $b): int {
+        $order = ((int) $a['sort_order']) <=> ((int) $b['sort_order']);
+
+        return $order !== 0 ? $order : strcmp((string) $a['name'], (string) $b['name']);
+    });
+
+    return array_slice(array_values($normalized), 0, max(0, $maxModules));
+}
+
 function normalizeSiteSettings(array $settings, array $config = []): array
 {
     $siteName = trim((string) ($settings['site_name'] ?? $config['site_name'] ?? 'GEOFlow Target Site'));
@@ -397,6 +642,7 @@ function normalizeSiteSettings(array $settings, array $config = []): array
         'seo_description_template' => trim((string) ($settings['seo_description_template'] ?? $config['seo_description_template'] ?? '{description}')),
         'featured_limit' => min(100, max(1, (int) ($settings['featured_limit'] ?? $config['featured_limit'] ?? 6))),
         'per_page' => min(200, max(1, (int) ($settings['per_page'] ?? $config['per_page'] ?? 12))),
+        'article_text_ads' => normalizeArticleTextAds($settings['article_text_ads'] ?? $config['article_text_ads'] ?? []),
         'active_theme' => trim((string) ($settings['active_theme'] ?? $config['active_theme'] ?? '')),
         'front_mode' => $frontMode,
     ];
@@ -703,6 +949,67 @@ function articleContentHtml(array $article): string
     return markdownToHtml((string) ($article['content'] ?? ''), (string) ($article['title'] ?? ''));
 }
 
+function articleTextAdUrlWithTracking(string $url, bool $trackingEnabled, string $trackingParam): string
+{
+    if (! $trackingEnabled || $trackingParam === '') {
+        return $url;
+    }
+
+    $fragment = '';
+    $baseUrl = $url;
+    $hashPosition = strpos($url, '#');
+    if ($hashPosition !== false) {
+        $fragment = substr($url, $hashPosition);
+        $baseUrl = substr($url, 0, $hashPosition);
+    }
+
+    $separator = str_contains($baseUrl, '?')
+        ? (str_ends_with($baseUrl, '?') || str_ends_with($baseUrl, '&') ? '' : '&')
+        : '?';
+
+    return $baseUrl.$separator.$trackingParam.$fragment;
+}
+
+function renderArticleTextAds(array $settings, string $placement, int $limit = 2): string
+{
+    if (! in_array($placement, ['content_top', 'content_bottom'], true)) {
+        return '';
+    }
+
+    $ads = normalizeArticleTextAds($settings['article_text_ads'] ?? [], true);
+    $matched = array_values(array_filter(
+        $ads,
+        static fn (array $module): bool => ($module['placement'] ?? '') === $placement && ($module['links'] ?? []) !== []
+    ));
+
+    if ($matched === []) {
+        return '';
+    }
+
+    $placementClass = str_replace('_', '-', $placement);
+    $html = '<div class="article-text-ads article-text-ads--'.h($placementClass).'" data-placement="'.h($placement).'">';
+    foreach (array_slice($matched, 0, max(1, $limit)) as $module) {
+        $html .= '<div class="article-text-ad-module" data-module-id="'.h((string) $module['id']).'">';
+        foreach ((array) ($module['links'] ?? []) as $link) {
+            if (! is_array($link) || empty($link['enabled'])) {
+                continue;
+            }
+
+            $url = articleTextAdUrlWithTracking((string) $link['url'], (bool) $link['tracking_enabled'], (string) $link['tracking_param']);
+            $target = ! empty($link['open_new_tab']) ? ' target="_blank"' : '';
+            $style = '--article-text-ad-color: '.h((string) $link['text_color']).';';
+
+            $html .= '<a class="article-text-ad-link" href="'.h($url).'" rel="noopener sponsored nofollow"'.$target.' style="'.$style.'">';
+            $html .= '<span class="article-text-ad-text">'.h((string) $link['text']).'</span>';
+            $html .= '</a>';
+        }
+        $html .= '</div>';
+    }
+    $html .= '</div>';
+
+    return $html;
+}
+
 function keywordTags(string $keywords): array
 {
     $keywords = trim($keywords);
@@ -750,6 +1057,33 @@ function articleSummary(array $article, int $limit = 160): string
     }
 
     return mb_substr(trim(strip_tags((string) ($article['content'] ?? ''))), 0, $limit);
+}
+
+function articleMetaDescription(array $article, int $limit = 160): string
+{
+    $description = trim((string) ($article['meta_description'] ?? ''));
+    if ($description === '') {
+        $description = trim((string) ($article['excerpt'] ?? ''));
+    }
+    if ($description === '') {
+        $description = trim(strip_tags((string) ($article['content_html'] ?? '')));
+    }
+    if ($description === '') {
+        $description = trim(strip_tags((string) ($article['content'] ?? '')));
+    }
+    $description = preg_replace('/\s+/u', ' ', $description) ?: $description;
+
+    return mb_substr($description, 0, $limit);
+}
+
+function articleMetaKeywords(array $article): string
+{
+    $keywords = trim((string) ($article['keywords'] ?? ''));
+    if ($keywords === '') {
+        return '';
+    }
+
+    return implode(',', keywordTags($keywords));
 }
 
 function renderTemplateString(string $template, array $vars): string
@@ -1283,32 +1617,71 @@ function articleDate(array $article, string $format = 'Y-m-d'): string
     return $timestamp ? date($format, $timestamp) : $date;
 }
 
-function pageHeader(array $config, string $title): void
+function pageSeoPayload(array $settings, string $title, array $pageMeta = []): array
+{
+    $siteName = (string) $settings['site_name'];
+    $hasMetaDescription = array_key_exists('description', $pageMeta);
+    $hasMetaKeywords = array_key_exists('keywords', $pageMeta);
+    $metaDescription = trim((string) ($pageMeta['description'] ?? ''));
+    $metaKeywords = trim((string) ($pageMeta['keywords'] ?? ''));
+    $canonicalUrl = trim((string) ($pageMeta['canonical_url'] ?? ''));
+    $ogType = trim((string) ($pageMeta['og_type'] ?? 'website'));
+    $isArticle = $ogType === 'article' || ! empty($pageMeta['article_page']);
+
+    $titleTemplate = (string) ($settings['seo_title_template'] ?? '{title} - {site_name}');
+    $descriptionTemplate = (string) ($settings['seo_description_template'] ?? '{description}');
+
+    $pageTitle = $isArticle
+        ? $title
+        : renderTemplateString($titleTemplate, [
+            'title' => $title,
+            'site_name' => $siteName,
+            'category' => '',
+        ]);
+
+    $description = $isArticle && $hasMetaDescription && $metaDescription !== ''
+        ? $metaDescription
+        : renderTemplateString($descriptionTemplate, [
+            'description' => $hasMetaDescription ? $metaDescription : (string) $settings['site_description'],
+            'site_name' => $siteName,
+            'keywords' => $hasMetaKeywords ? $metaKeywords : (string) $settings['site_keywords'],
+        ]);
+
+    return [
+        'page_title' => $pageTitle,
+        'description' => $description,
+        'keywords' => $hasMetaKeywords ? $metaKeywords : (string) $settings['site_keywords'],
+        'canonical_url' => $canonicalUrl,
+        'og_type' => $ogType,
+    ];
+}
+
+function pageHeader(array $config, string $title, array $pageMeta = []): void
 {
     $settings = siteSettings($config);
     $siteName = (string) $settings['site_name'];
     $themeClass = themeClass($settings);
     if ($themeClass === 'target-theme-apparel') {
-        apparelPageHeader($config, $settings, $title);
+        apparelPageHeader($config, $settings, $title, $pageMeta);
 
         return;
     }
-    $description = renderTemplateString((string) $settings['seo_description_template'], [
-        'description' => (string) $settings['site_description'],
-        'site_name' => $siteName,
-        'keywords' => (string) $settings['site_keywords'],
-    ]);
-    $pageTitle = renderTemplateString((string) $settings['seo_title_template'], [
-        'title' => $title,
-        'site_name' => $siteName,
-        'category' => '',
-    ]);
+    $seo = pageSeoPayload($settings, $title, $pageMeta);
     $homeUrl = frontSitePath($config, '/');
     echo '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
-    echo '<title>'.h($pageTitle).'</title><meta name="description" content="'.h($description).'">';
-    if ((string) $settings['site_keywords'] !== '') {
-        echo '<meta name="keywords" content="'.h((string) $settings['site_keywords']).'">';
+    echo '<title>'.h((string) $seo['page_title']).'</title><meta name="description" content="'.h((string) $seo['description']).'">';
+    $keywords = (string) $seo['keywords'];
+    if ($keywords !== '') {
+        echo '<meta name="keywords" content="'.h($keywords).'">';
     }
+    if ((string) $seo['canonical_url'] !== '') {
+        echo '<link rel="canonical" href="'.h((string) $seo['canonical_url']).'">';
+    }
+    echo '<meta property="og:title" content="'.h((string) $seo['page_title']).'"><meta property="og:description" content="'.h((string) $seo['description']).'"><meta property="og:type" content="'.h((string) $seo['og_type']).'">';
+    if ((string) $seo['canonical_url'] !== '') {
+        echo '<meta property="og:url" content="'.h((string) $seo['canonical_url']).'">';
+    }
+    echo '<meta property="og:site_name" content="'.h($siteName).'">';
     if ((string) $settings['site_favicon'] !== '') {
         echo '<link rel="icon" href="'.h((string) $settings['site_favicon']).'">';
     }
@@ -1329,24 +1702,27 @@ function pageFooter(array $config): void
     echo '</main><footer><div class="wrap">'.h((string) $settings['copyright_info']).'</div></footer></body></html>';
 }
 
-function apparelPageHeader(array $config, array $settings, string $title): void
+function apparelPageHeader(array $config, array $settings, string $title, array $pageMeta = []): void
 {
     $siteName = (string) $settings['site_name'];
-    $description = renderTemplateString((string) $settings['seo_description_template'], [
-        'description' => (string) $settings['site_description'],
-        'site_name' => $siteName,
-        'keywords' => (string) $settings['site_keywords'],
-    ]);
-    $pageTitle = renderTemplateString((string) $settings['seo_title_template'], [
-        'title' => $title,
-        'site_name' => $siteName,
-        'category' => '',
-    ]);
+    $seo = pageSeoPayload($settings, $title, $pageMeta);
     $homeUrl = frontSitePath($config, '/');
     echo '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
-    echo '<title>'.h($pageTitle).'</title><meta name="description" content="'.h($description).'">';
-    if ((string) $settings['site_keywords'] !== '') {
-        echo '<meta name="keywords" content="'.h((string) $settings['site_keywords']).'">';
+    echo '<title>'.h((string) $seo['page_title']).'</title><meta name="description" content="'.h((string) $seo['description']).'">';
+    $keywords = (string) $seo['keywords'];
+    if ($keywords !== '') {
+        echo '<meta name="keywords" content="'.h($keywords).'">';
+    }
+    if ((string) $seo['canonical_url'] !== '') {
+        echo '<link rel="canonical" href="'.h((string) $seo['canonical_url']).'">';
+    }
+    echo '<meta property="og:title" content="'.h((string) $seo['page_title']).'"><meta property="og:description" content="'.h((string) $seo['description']).'"><meta property="og:type" content="'.h((string) $seo['og_type']).'">';
+    if ((string) $seo['canonical_url'] !== '') {
+        echo '<meta property="og:url" content="'.h((string) $seo['canonical_url']).'">';
+    }
+    echo '<meta property="og:site_name" content="'.h($siteName).'">';
+    if ((string) $settings['site_favicon'] !== '') {
+        echo '<link rel="icon" href="'.h((string) $settings['site_favicon']).'">';
     }
     echo '<link rel="stylesheet" href="'.h(frontVersionedAssetPath($config, '/assets/css/site.css')).'">';
     echo '<script defer src="'.h(frontVersionedAssetPath($config, '/assets/js/site.js')).'"></script>';
@@ -1604,22 +1980,30 @@ function renderArticlePage(array $config, string $slug): void
     $title = (string) ($article['title'] ?? '未命名文章');
     $category = is_array($article['category'] ?? null) ? (string) ($article['category']['name'] ?? '默认分类') : '默认分类';
     $publishedAt = substr((string) ($article['published_at'] ?? $article['updated_at'] ?? ''), 0, 10);
-    pageHeader($config, $title);
+    $settings = siteSettings($config);
+    $articleUrl = frontSiteUrl($config, '/article/'.rawurlencode($slug));
+    $articleDescription = articleMetaDescription($article);
+    pageHeader($config, $title, [
+        'description' => $articleDescription,
+        'keywords' => articleMetaKeywords($article),
+        'canonical_url' => $articleUrl,
+        'og_type' => 'article',
+    ]);
     echo jsonLdScript([
         "@context"=>"https://schema.org",
         "@type"=>"Article",
         "headline"=>$title,
-        "description"=>(string) ($article['meta_description'] ?? $article['excerpt'] ?? ''),
+        "description"=>$articleDescription,
         "datePublished"=>(string) ($article['published_at'] ?? ''),
         "dateModified"=>(string) ($article['updated_at'] ?? ''),
-        "mainEntityOfPage"=>frontSiteUrl($config, '/article/'.rawurlencode($slug)),
+        "mainEntityOfPage"=>$articleUrl,
         "author"=>[
             "@type"=>"Person",
             "name"=>is_array($article['author'] ?? null) ? (string) ($article['author']['name'] ?? 'GEOFlow') : 'GEOFlow',
         ],
         "publisher"=>[
             "@type"=>"Organization",
-            "name"=>(string) siteSettings($config)['site_name'],
+            "name"=>(string) $settings['site_name'],
         ],
     ]);
     echo jsonLdScript([
@@ -1630,7 +2014,7 @@ function renderArticlePage(array $config, string $slug): void
             ["@type"=>"ListItem", "position"=>2, "name"=>$title, "item"=>frontSiteUrl($config, '/article/'.rawurlencode($slug))],
         ],
     ]);
-    $themeClass = themeClass(siteSettings($config));
+    $themeClass = themeClass($settings);
     $isFashion = $themeClass === 'target-theme-fashion';
     $isApparel = $themeClass === 'target-theme-apparel';
     echo $isApparel ? '<div class="asi-shell asi-article-layout"><main class="asi-article-column"><nav class="asi-breadcrumb"><a href="'.h(frontSitePath($config, '/')).'">Latest</a><span>/</span><span>'.h($category).'</span></nav>' : '';
@@ -1658,7 +2042,7 @@ function renderArticlePage(array $config, string $slug): void
         echo '</header>';
         renderApparelVisual($config, $article, 'asi-article-visual');
     }
-    echo '<div class="'.($isApparel ? 'asi-prose content' : 'content').'">'.articleContentHtml($article).'</div>';
+    echo '<div class="'.($isApparel ? 'asi-prose content' : 'content').'">'.renderArticleTextAds($settings, 'content_top').articleContentHtml($article).renderArticleTextAds($settings, 'content_bottom').'</div>';
     $tags = keywordTags((string) ($article['keywords'] ?? ''));
     if ($tags !== []) {
         echo '<div class="tags">';
@@ -1670,7 +2054,7 @@ function renderArticlePage(array $config, string $slug): void
     echo '</article>';
     if ($isApparel) {
         echo '</main>';
-        renderApparelSidebar($config, siteSettings($config), loadArticles($config));
+        renderApparelSidebar($config, $settings, loadArticles($config));
         echo '</div>';
     }
     pageFooter($config);

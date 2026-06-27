@@ -186,7 +186,7 @@ docker compose up -d
 
 Acesse `http://localhost:18080` (frontend) e `http://localhost:18080/geo_admin` (admin).
 
-Para produção, configure `.env.prod` e use `docker compose --env-file .env.prod -f docker-compose.prod.yml up -d`. O serviço `init` de produção executa as migrações e o `db:seed` inicial para criar a conta admin padrão; execuções repetidas não sobrescrevem o usuário `admin` existente.
+Para produção, configure `.env.prod` e use `docker compose --env-file .env.prod -f docker-compose.prod.yml up -d`. O serviço `init` de produção executa as migrações e depois `php artisan geoflow:install`. Esse comando só cria a conta admin padrão quando o banco está vazio; se detectar dados existentes, apenas grava o marcador de instalação e não reinsere categorias, artigos, configurações do site, anúncios nem prompts.
 
 ### portas
 
@@ -206,14 +206,16 @@ Para produção, configure `.env.prod` e use `docker compose --env-file .env.pro
 chmod -R ug+rwx storage bootstrap/cache
 ```
 
-**Admin padrão** após `php artisan db:seed`:
+**Admin padrão** após `geoflow:install`:
 
 | Campo | Valor |
 |-------|-------|
 | Usuário | `GEOFLOW_ADMIN_USERNAME`, padrão `admin` |
-| Senha | Em desenvolvimento local, o padrão é `password`; em produção defina `GEOFLOW_ADMIN_PASSWORD`. Se ficar vazio e a conta ainda não existir, o seeder gera uma senha aleatória de uso único nos logs de init / `db:seed`. |
+| Senha | Em desenvolvimento local, o padrão é `password`; em produção defina `GEOFLOW_ADMIN_PASSWORD`. Se ficar vazio e a conta ainda não existir, o instalador gera uma senha aleatória de uso único nos logs de init / `geoflow:install`. |
 
-O seeder só cria a conta quando o usuário alvo não existe. Execuções repetidas nunca sobrescrevem usuário, email ou senha existentes.
+`geoflow:install` só executa seeders iniciais quando o banco está vazio. Se detectar dados de usuário ou de negócio, apenas grava o marcador de instalação e ignora o seed. O admin seeder continua idempotente e nunca sobrescreve usuário, email ou senha existentes.
+
+Se precisar de categorias e artigos demo do frontend, defina `GEOFLOW_SEED_FRONTEND_DEMO=true` e então execute `php artisan db:seed --force`. Por padrão, os dados demo apenas preenchem registros ausentes e não sobrescrevem configurações do site, anúncios, categorias ou artigos existentes. Use `GEOFLOW_SEED_FRONTEND_DEMO_OVERWRITE=true` apenas para reiniciar uma base demo.
 
 ### Bloqueio de login admin e desbloqueio manual
 

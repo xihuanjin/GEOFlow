@@ -14,6 +14,7 @@ use App\Services\GeoFlow\DistributionPublisherManager;
 use App\Services\GeoFlow\DistributionTargetSitePackageBuilder;
 use App\Support\AdminWeb;
 use App\Support\GeoFlow\ApiKeyCrypto;
+use App\Support\Site\ArticleTextAdPicker;
 use App\Support\Site\SiteThemeCatalog;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -84,6 +85,7 @@ class DistributionController extends Controller
             'pageTitle' => __('admin.distribution.create_title'),
             'activeMenu' => 'distribution',
             'adminSiteName' => AdminWeb::siteName(),
+            'availableThemes' => $this->siteThemeCatalog->all(),
         ]);
     }
 
@@ -152,6 +154,8 @@ class DistributionController extends Controller
             'channel' => $channel,
             'remoteSiteSettings' => $channel->resolvedSiteSettings(),
             'availableThemes' => $this->siteThemeCatalog->all(),
+            'articleDetailTextAds' => ArticleTextAdPicker::all(false),
+            'articleTextAdPolicy' => $channel->resolvedArticleTextAdPolicy(),
         ]);
     }
 
@@ -265,6 +269,8 @@ class DistributionController extends Controller
             'jobs' => $jobs,
             'logs' => $logs,
             'remoteSiteSettings' => $channel->resolvedSiteSettings(),
+            'articleTextAdPolicy' => $channel->resolvedArticleTextAdPolicy(),
+            'effectiveArticleTextAds' => $channel->effectiveArticleTextAds(),
         ]);
     }
 
@@ -647,6 +653,92 @@ class DistributionController extends Controller
         }
     }
 
+    public function syncSettingsAll(): RedirectResponse
+    {
+        $channels = $this->syncableAgentChannelsQuery()
+            ->orderBy('id')
+            ->get();
+
+        $synced = 0;
+        $failed = 0;
+        $refreshCount = 0;
+        foreach ($channels as $channel) {
+            try {
+                $this->syncChannelSiteSettings($channel);
+                $refreshCount += $this->distributionOrchestrator->enqueueChannelContentRefresh($channel);
+                $synced++;
+            } catch (Throwable) {
+                $failed++;
+            }
+        }
+
+        $message = __('admin.distribution.message.settings_synced_all', [
+            'success' => $synced,
+            'failed' => $failed,
+            'refresh' => $refreshCount,
+        ]);
+
+        return $failed > 0
+            ? back()->with('message', $message)->withErrors(__('admin.distribution.message.settings_synced_all_failed_hint'))
+            : back()->with('message', $message);
+    }
+
+    public function syncSettingsSelected(Request $request): RedirectResponse
+    {
+        $channelIds = collect($request->input('channel_ids', []))
+            ->map(static fn ($id): int => (int) $id)
+            ->filter(static fn (int $id): bool => $id > 0)
+            ->unique()
+            ->values();
+
+        if ($channelIds->isEmpty()) {
+            return back()->withErrors(__('admin.distribution.message.settings_sync_selected_empty'));
+        }
+
+        $channels = $this->syncableAgentChannelsQuery()
+            ->whereIn('id', $channelIds->all())
+            ->orderBy('id')
+            ->get();
+
+        if ($channels->isEmpty()) {
+            return back()->withErrors(__('admin.distribution.message.settings_sync_selected_empty'));
+        }
+
+        $synced = 0;
+        $failed = 0;
+        $refreshCount = 0;
+        foreach ($channels as $channel) {
+            try {
+                $this->syncChannelSiteSettings($channel);
+                $refreshCount += $this->distributionOrchestrator->enqueueChannelContentRefresh($channel);
+                $synced++;
+            } catch (Throwable) {
+                $failed++;
+            }
+        }
+
+        $message = __('admin.distribution.message.settings_synced_selected', [
+            'success' => $synced,
+            'failed' => $failed,
+            'refresh' => $refreshCount,
+        ]);
+
+        return $failed > 0
+            ? back()->with('message', $message)->withErrors(__('admin.distribution.message.settings_synced_all_failed_hint'))
+            : back()->with('message', $message);
+    }
+
+    private function syncableAgentChannelsQuery()
+    {
+        return DistributionChannel::query()
+            ->with('activeSecret')
+            ->where('status', 'active')
+            ->where(function ($query): void {
+                $query->whereNull('channel_type')
+                    ->orWhere('channel_type', 'geoflow_agent');
+            });
+    }
+
     /**
      * @return array<string,mixed>
      */
@@ -784,6 +876,19 @@ class DistributionController extends Controller
             'seo_description_template' => ['nullable', 'string', 'max:255'],
             'featured_limit' => ['nullable', 'integer', 'min:1', 'max:100'],
             'per_page' => ['nullable', 'integer', 'min:1', 'max:200'],
+            'article_text_ad_policy' => ['nullable', 'array'],
+            'article_text_ad_policy.content_top.mode' => ['nullable', 'string', 'in:inherit,disabled,selected,custom'],
+            'article_text_ad_policy.content_top.module_ids' => ['nullable', 'array'],
+            'article_text_ad_policy.content_top.module_ids.*' => ['nullable', 'string', 'max:120'],
+            'article_text_ad_policy.content_top.ad_ids' => ['nullable', 'array'],
+            'article_text_ad_policy.content_top.ad_ids.*' => ['nullable', 'string', 'max:120'],
+            'article_text_ad_policy.content_top.custom_modules' => ['nullable', 'array'],
+            'article_text_ad_policy.content_bottom.mode' => ['nullable', 'string', 'in:inherit,disabled,selected,custom'],
+            'article_text_ad_policy.content_bottom.module_ids' => ['nullable', 'array'],
+            'article_text_ad_policy.content_bottom.module_ids.*' => ['nullable', 'string', 'max:120'],
+            'article_text_ad_policy.content_bottom.ad_ids' => ['nullable', 'array'],
+            'article_text_ad_policy.content_bottom.ad_ids.*' => ['nullable', 'string', 'max:120'],
+            'article_text_ad_policy.content_bottom.custom_modules' => ['nullable', 'array'],
         ]);
 
         $payload['endpoint_url'] = $this->normalizeEndpointUrl((string) $payload['endpoint_url']);
@@ -859,7 +964,190 @@ class DistributionController extends Controller
             }
         }
 
+        $this->validateArticleTextAdPolicyPayload($payload['article_text_ad_policy'] ?? null);
+
         return $payload;
+    }
+
+    private function validateArticleTextAdPolicyPayload(mixed $policy): void
+    {
+        if (! is_array($policy)) {
+            return;
+        }
+
+        $placementPolicies = array_key_exists('mode', $policy)
+            ? [
+                ArticleTextAdPicker::PLACEMENT_TOP => $policy,
+                ArticleTextAdPicker::PLACEMENT_BOTTOM => $policy,
+            ]
+            : [
+                ArticleTextAdPicker::PLACEMENT_TOP => is_array($policy[ArticleTextAdPicker::PLACEMENT_TOP] ?? null) ? $policy[ArticleTextAdPicker::PLACEMENT_TOP] : [],
+                ArticleTextAdPicker::PLACEMENT_BOTTOM => is_array($policy[ArticleTextAdPicker::PLACEMENT_BOTTOM] ?? null) ? $policy[ArticleTextAdPicker::PLACEMENT_BOTTOM] : [],
+            ];
+
+        foreach ($placementPolicies as $placement => $placementPolicy) {
+            if ((string) ($placementPolicy['mode'] ?? 'inherit') !== 'custom') {
+                continue;
+            }
+
+            $this->validateArticleTextAdCustomModules(
+                $placementPolicy['custom_modules'] ?? [],
+                (string) $placement
+            );
+        }
+    }
+
+    private function validateArticleTextAdCustomModules(mixed $modules, string $placement): void
+    {
+        if (! is_array($modules)) {
+            return;
+        }
+
+        if (count($modules) > DistributionChannel::MAX_CUSTOM_TEXT_AD_MODULES_PER_PLACEMENT) {
+            throw ValidationException::withMessages([
+                'article_text_ad_policy' => __('admin.site_settings.ads.text_validation_max_modules', [
+                    'max' => DistributionChannel::MAX_CUSTOM_TEXT_AD_MODULES_PER_PLACEMENT,
+                ]),
+            ]);
+        }
+
+        foreach (array_values($modules) as $moduleIndex => $module) {
+            if (! is_array($module)) {
+                continue;
+            }
+
+            $moduleNumber = $moduleIndex + 1;
+            $modulePlacement = (string) ($module['placement'] ?? $placement);
+            if ($modulePlacement !== $placement || ! in_array($modulePlacement, ArticleTextAdPicker::PLACEMENTS, true)) {
+                throw ValidationException::withMessages([
+                    'article_text_ad_policy' => __('admin.site_settings.ads.text_validation_position', ['index' => $moduleNumber]),
+                ]);
+            }
+
+            $rawLinks = is_array($module['links'] ?? null) ? $module['links'] : [];
+            if (count($rawLinks) > ArticleTextAdPicker::MAX_LINKS_PER_MODULE) {
+                throw ValidationException::withMessages([
+                    'article_text_ad_policy' => __('admin.site_settings.ads.text_validation_max_links', [
+                        'index' => $moduleNumber,
+                        'max' => ArticleTextAdPicker::MAX_LINKS_PER_MODULE,
+                    ]),
+                ]);
+            }
+
+            $validLinks = 0;
+            foreach (array_values($rawLinks) as $linkIndex => $link) {
+                if (! is_array($link)) {
+                    continue;
+                }
+
+                $linkNumber = $moduleNumber.'.'.($linkIndex + 1);
+                $text = trim((string) ($link['text'] ?? ''));
+                $rawUrl = trim((string) ($link['url'] ?? ''));
+                $trackingParam = ltrim(trim((string) ($link['tracking_param'] ?? '')), "? \t\n\r\0\x0B");
+                $color = trim((string) ($link['text_color'] ?? ''));
+
+                if ($text === '' && $rawUrl === '' && $trackingParam === '') {
+                    continue;
+                }
+
+                $url = $this->normalizeArticleTextAdUrlForValidation($rawUrl);
+                if ($rawUrl !== '' && $url === '') {
+                    throw ValidationException::withMessages([
+                        'article_text_ad_policy' => __('admin.site_settings.ads.text_validation_url', ['index' => $linkNumber]),
+                    ]);
+                }
+
+                if ($text === '' || $url === '') {
+                    throw ValidationException::withMessages([
+                        'article_text_ad_policy' => __('admin.site_settings.ads.text_validation_required', ['index' => $linkNumber]),
+                    ]);
+                }
+
+                if ($color !== '' && ! $this->isValidArticleTextAdHexColor($color)) {
+                    throw ValidationException::withMessages([
+                        'article_text_ad_policy' => __('admin.site_settings.ads.text_validation_color', ['index' => $linkNumber]),
+                    ]);
+                }
+
+                if ($trackingParam !== '' && ! $this->isValidArticleTextAdTrackingParam($trackingParam)) {
+                    throw ValidationException::withMessages([
+                        'article_text_ad_policy' => __('admin.site_settings.ads.text_validation_tracking', ['index' => $linkNumber]),
+                    ]);
+                }
+
+                $validLinks++;
+            }
+
+            if (
+                $validLinks === 0
+                && (
+                    trim((string) ($module['id'] ?? '')) !== ''
+                    || trim((string) ($module['name'] ?? '')) !== ''
+                    || $this->hasArticleTextAdLinkData($rawLinks)
+                )
+            ) {
+                throw ValidationException::withMessages([
+                    'article_text_ad_policy' => __('admin.site_settings.ads.text_validation_module_required', ['index' => $moduleNumber]),
+                ]);
+            }
+        }
+    }
+
+    private function hasArticleTextAdLinkData(array $rawLinks): bool
+    {
+        foreach ($rawLinks as $link) {
+            if (! is_array($link)) {
+                continue;
+            }
+
+            if (
+                trim((string) ($link['text'] ?? '')) !== ''
+                || trim((string) ($link['url'] ?? '')) !== ''
+                || trim((string) ($link['tracking_param'] ?? '')) !== ''
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function normalizeArticleTextAdUrlForValidation(string $url): string
+    {
+        $normalized = trim($url);
+        if ($normalized === '' || str_starts_with($normalized, '//')) {
+            return '';
+        }
+
+        if (str_starts_with($normalized, '/')) {
+            return $normalized;
+        }
+
+        if (preg_match('#^https?://#i', $normalized) === 1) {
+            return $normalized;
+        }
+
+        if (preg_match('#^[a-z][a-z0-9+.-]*:#i', $normalized) === 1) {
+            return '';
+        }
+
+        return '/'.ltrim($normalized, '/');
+    }
+
+    private function isValidArticleTextAdHexColor(string $color): bool
+    {
+        return preg_match('/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/', trim($color)) === 1;
+    }
+
+    private function isValidArticleTextAdTrackingParam(string $trackingParam): bool
+    {
+        $trackingParam = trim($trackingParam);
+
+        return $trackingParam !== ''
+            && mb_strlen($trackingParam) <= 250
+            && ! str_contains($trackingParam, '://')
+            && ! str_starts_with($trackingParam, '/')
+            && preg_match('/^[A-Za-z0-9._~%=&+;,:@-]+$/', $trackingParam) === 1;
     }
 
     /**
@@ -905,11 +1193,13 @@ class DistributionController extends Controller
     private function normalizeChannelConfig(array $payload, ?DistributionChannel $channel = null): array
     {
         $channelType = (string) ($payload['channel_type'] ?? 'geoflow_agent');
+        $articleTextAdPolicy = $this->normalizeArticleTextAdPolicy($payload['article_text_ad_policy'] ?? null, $channel);
 
         if ($channelType === 'generic_http_api') {
             $defaults = $channel?->resolvedGenericHttpConfig() ?? (new DistributionChannel)->resolvedGenericHttpConfig();
 
             return [
+                'article_text_ad_policy' => $articleTextAdPolicy,
                 'generic_auth_type' => (string) ($payload['generic_auth_type'] ?? $defaults['generic_auth_type']),
                 'generic_basic_username' => trim((string) ($payload['generic_basic_username'] ?? $defaults['generic_basic_username'])),
                 'generic_header_name' => trim((string) ($payload['generic_header_name'] ?? $defaults['generic_header_name'])),
@@ -937,7 +1227,9 @@ class DistributionController extends Controller
         }
 
         if ($channelType !== 'wordpress_rest') {
-            return [];
+            return [
+                'article_text_ad_policy' => $articleTextAdPolicy,
+            ];
         }
 
         $defaults = $channel?->resolvedChannelConfig() ?? [
@@ -951,6 +1243,7 @@ class DistributionController extends Controller
         ];
 
         return [
+            'article_text_ad_policy' => $articleTextAdPolicy,
             'wordpress_username' => trim((string) ($payload['wordpress_username'] ?? $defaults['wordpress_username'])),
             'wordpress_post_status' => (string) ($payload['wordpress_post_status'] ?? $defaults['wordpress_post_status']),
             'wordpress_category_strategy' => (string) ($payload['wordpress_category_strategy'] ?? $defaults['wordpress_category_strategy']),
@@ -959,6 +1252,22 @@ class DistributionController extends Controller
             'wordpress_image_strategy' => (string) ($payload['wordpress_image_strategy'] ?? $defaults['wordpress_image_strategy']),
             'wordpress_content_format' => 'html',
         ];
+    }
+
+    /**
+     * @return array{
+     *   content_top:array{mode:string,ad_ids:list<string>},
+     *   content_bottom:array{mode:string,ad_ids:list<string>}
+     * }
+     */
+    private function normalizeArticleTextAdPolicy(mixed $policy, ?DistributionChannel $channel = null): array
+    {
+        if ($policy === null) {
+            return $channel?->resolvedArticleTextAdPolicy()
+                ?? DistributionChannel::normalizeArticleTextAdPolicy(null);
+        }
+
+        return DistributionChannel::normalizeArticleTextAdPolicy($policy);
     }
 
     /**

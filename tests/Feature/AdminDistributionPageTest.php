@@ -16,13 +16,17 @@ use App\Models\DistributionLog;
 use App\Models\Image;
 use App\Models\ImageLibrary;
 use App\Models\Prompt;
+use App\Models\SiteSetting;
 use App\Models\Task;
 use App\Models\TitleLibrary;
 use App\Services\GeoFlow\DistributionOrchestrator;
 use App\Services\GeoFlow\DistributionPayloadBuilder;
 use App\Services\GeoFlow\DistributionRetryPolicy;
 use App\Services\GeoFlow\DistributionSigningService;
+use App\Services\GeoFlow\TaskDistributionChannelSelector;
 use App\Support\GeoFlow\ApiKeyCrypto;
+use App\Support\Site\SiteSettingsBag;
+use App\Support\Site\SiteThemeCatalog;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
@@ -220,6 +224,129 @@ class AdminDistributionPageTest extends TestCase
             ->assertSee('静态文件模式')
             ->assertSee('伪静态模式')
             ->assertSee(__('admin.distribution.help.endpoint_url'));
+    }
+
+    public function test_distribution_channel_create_form_collapses_template_choices_after_two_rows(): void
+    {
+        $this->app->instance(SiteThemeCatalog::class, new class extends SiteThemeCatalog
+        {
+            public function all(): array
+            {
+                return collect(range(1, 8))
+                    ->map(fn (int $index): array => [
+                        'id' => sprintf('theme-%02d', $index),
+                        'name' => sprintf('Theme %02d', $index),
+                        'version' => '1.0.0',
+                        'description' => sprintf('Theme %02d description', $index),
+                    ])
+                    ->all();
+            }
+        });
+
+        $response = $this->actingAs($this->admin(), 'admin')
+            ->get(route('admin.distribution.create'))
+            ->assertOk()
+            ->assertSee(__('admin.site_settings.theme.section_title'))
+            ->assertSee('name="template_key" value=""', false)
+            ->assertSee('name="template_key" value="theme-01"', false)
+            ->assertSee(__('admin.distribution.remote_site.template_expand_more', ['count' => 3]));
+
+        $html = (string) $response->getContent();
+
+        $this->assertSame(3, substr_count($html, 'data-distribution-theme-collapsed="true"'));
+        $this->assertMatchesRegularExpression('/class="[^"]*hidden[^"]*"[^>]*data-distribution-theme-card[^>]*data-distribution-theme-collapsed="true"[^>]*>\\s*<input[^>]+value="theme-06"/s', $html);
+    }
+
+    public function test_distribution_channel_edit_form_collapses_template_choices_after_two_rows(): void
+    {
+        $this->app->instance(SiteThemeCatalog::class, new class extends SiteThemeCatalog
+        {
+            public function all(): array
+            {
+                return collect(range(1, 8))
+                    ->map(fn (int $index): array => [
+                        'id' => sprintf('theme-%02d', $index),
+                        'name' => sprintf('Theme %02d', $index),
+                        'version' => '1.0.0',
+                        'description' => sprintf('Theme %02d description', $index),
+                    ])
+                    ->all();
+            }
+        });
+
+        $channel = DistributionChannel::query()->create([
+            'name' => '模板折叠渠道',
+            'domain' => 'theme-collapse.example.com',
+            'endpoint_url' => 'https://theme-collapse.example.com',
+            'template_key' => 'theme-08',
+            'status' => 'active',
+        ]);
+
+        $response = $this->actingAs($this->admin(), 'admin')
+            ->get(route('admin.distribution.edit', ['channelId' => (int) $channel->id]))
+            ->assertOk()
+            ->assertSee(__('admin.site_settings.theme.section_title'))
+            ->assertSee('name="template_key" value=""', false)
+            ->assertSee('name="template_key" value="theme-08"', false)
+            ->assertSee(__('admin.distribution.remote_site.template_expand_more', ['count' => 2]));
+
+        $html = (string) $response->getContent();
+
+        $this->assertSame(3, substr_count($html, 'data-distribution-theme-collapsed="true"'));
+        $this->assertMatchesRegularExpression('/class="[^"]*hidden[^"]*"[^>]*data-distribution-theme-card[^>]*data-distribution-theme-collapsed="true"[^>]*>\\s*<input[^>]+value="theme-06"/s', $html);
+        $this->assertDoesNotMatchRegularExpression('/class="[^"]*hidden[^"]*"[^>]*data-distribution-theme-card[^>]*data-distribution-theme-collapsed="true"[^>]*>\\s*<input[^>]+value="theme-08"/s', $html);
+    }
+
+    public function test_distribution_channel_edit_custom_text_ads_render_localized_fields(): void
+    {
+        $channel = DistributionChannel::query()->create([
+            'name' => '自定义广告编辑渠道',
+            'domain' => 'custom-ad-edit.example.com',
+            'endpoint_url' => 'https://custom-ad-edit.example.com',
+            'status' => 'active',
+            'channel_config' => [
+                'article_text_ad_policy' => [
+                    'content_top' => [
+                        'mode' => 'custom',
+                        'custom_modules' => [
+                            [
+                                'id' => 'channel-module-1',
+                                'name' => '渠道顶部广告',
+                                'placement' => 'content_top',
+                                'enabled' => true,
+                                'sort_order' => 10,
+                                'links' => [
+                                    [
+                                        'text' => '渠道文字链',
+                                        'url' => 'https://example.com/landing',
+                                        'text_color' => '#2563eb',
+                                        'open_new_tab' => true,
+                                        'tracking_enabled' => true,
+                                        'tracking_param' => 'utm_source=channel',
+                                        'enabled' => true,
+                                        'sort_order' => 10,
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                    'content_bottom' => [
+                        'mode' => 'inherit',
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->actingAs($this->admin(), 'admin')
+            ->get(route('admin.distribution.edit', ['channelId' => (int) $channel->id]))
+            ->assertOk()
+            ->assertSee(__('admin.site_settings.ads.text_field_name'))
+            ->assertSee(__('admin.site_settings.ads.text_link_section'))
+            ->assertSee(__('admin.site_settings.ads.text_add_link'))
+            ->assertSee('name="article_text_ad_policy[content_top][custom_modules][0][links][0][text]"', false)
+            ->assertSee('渠道文字链')
+            ->assertDontSee('admin.site_settings.article_detail_ads')
+            ->assertDontSee('admin.site_settings.ads.');
     }
 
     public function test_wordpress_distribution_channel_form_shows_wordpress_fields(): void
@@ -743,6 +870,230 @@ class AdminDistributionPageTest extends TestCase
         ], $channel->site_settings);
     }
 
+    public function test_distribution_channel_article_text_ad_policy_is_saved_and_reflected_in_payload(): void
+    {
+        SiteSetting::query()->updateOrCreate(
+            ['setting_key' => 'article_detail_text_ads'],
+            ['setting_value' => json_encode([
+                [
+                    'id' => 'sync-top',
+                    'name' => 'Top Sync',
+                    'placement' => 'content_top',
+                    'text' => 'Top Sync CTA',
+                    'url' => '/top-sync',
+                    'text_color' => '#2563eb',
+                    'open_new_tab' => false,
+                    'tracking_enabled' => false,
+                    'tracking_param' => '',
+                    'enabled' => true,
+                    'sort_order' => 10,
+                ],
+                [
+                    'id' => 'sync-bottom',
+                    'name' => 'Bottom Sync',
+                    'placement' => 'content_bottom',
+                    'text' => 'Bottom Sync CTA',
+                    'url' => '/bottom-sync',
+                    'text_color' => '#16a34a',
+                    'open_new_tab' => true,
+                    'tracking_enabled' => true,
+                    'tracking_param' => 'utm_source=geoflow',
+                    'enabled' => true,
+                    'sort_order' => 20,
+                ],
+            ], JSON_UNESCAPED_UNICODE)]
+        );
+        SiteSettingsBag::forget();
+
+        $admin = $this->admin();
+        $channel = DistributionChannel::query()->create([
+            'name' => '文本广告渠道',
+            'domain' => 'ads.example.com',
+            'endpoint_url' => 'https://ads.example.com',
+            'status' => 'active',
+        ]);
+
+        $this->actingAs($admin, 'admin')
+            ->put(route('admin.distribution.update', ['channelId' => (int) $channel->id]), [
+                'name' => '文本广告渠道',
+                'domain' => 'ads.example.com',
+                'endpoint_url' => 'https://ads.example.com',
+                'front_mode' => 'static',
+                'template_key' => 'default',
+                'status' => 'active',
+                'description' => '',
+                'site_name' => '广告目标站',
+                'site_subtitle' => '',
+                'site_description' => '广告目标站描述',
+                'site_keywords' => '',
+                'copyright_info' => '© 2026 广告目标站',
+                'site_logo' => '',
+                'site_favicon' => '',
+                'seo_title_template' => '{title} - {site_name}',
+                'seo_description_template' => '{description}',
+                'featured_limit' => 6,
+                'per_page' => 12,
+                'article_text_ad_policy' => [
+                    'content_top' => [
+                        'mode' => 'selected',
+                        'module_ids' => ['sync-top'],
+                    ],
+                    'content_bottom' => [
+                        'mode' => 'disabled',
+                        'ad_ids' => ['sync-bottom'],
+                    ],
+                ],
+            ])
+            ->assertRedirect(route('admin.distribution.show', ['channelId' => (int) $channel->id]));
+
+        $channel->refresh();
+        $policy = $channel->resolvedArticleTextAdPolicy();
+        $this->assertSame('selected', $policy['content_top']['mode']);
+        $this->assertSame(['sync-top'], $policy['content_top']['module_ids']);
+        $this->assertSame('disabled', $policy['content_bottom']['mode']);
+
+        $payload = $channel->targetSiteSettingsPayload();
+        $this->assertArrayHasKey('article_text_ads', $payload);
+        $this->assertCount(1, $payload['article_text_ads']);
+        $this->assertSame('sync-top', $payload['article_text_ads'][0]['id']);
+        $this->assertSame('Top Sync CTA', $payload['article_text_ads'][0]['links'][0]['text']);
+    }
+
+    public function test_distribution_channel_can_use_custom_article_text_ad_modules(): void
+    {
+        $admin = $this->admin();
+        $channel = DistributionChannel::query()->create([
+            'name' => '自定义文本广告渠道',
+            'domain' => 'custom-ads.example.com',
+            'endpoint_url' => 'https://custom-ads.example.com',
+            'status' => 'active',
+        ]);
+
+        $this->actingAs($admin, 'admin')
+            ->put(route('admin.distribution.update', ['channelId' => (int) $channel->id]), [
+                'name' => '自定义文本广告渠道',
+                'domain' => 'custom-ads.example.com',
+                'endpoint_url' => 'https://custom-ads.example.com',
+                'front_mode' => 'static',
+                'template_key' => 'default',
+                'status' => 'active',
+                'description' => '',
+                'site_name' => '自定义广告站',
+                'site_subtitle' => '',
+                'site_description' => '自定义广告站描述',
+                'site_keywords' => '',
+                'copyright_info' => '© 2026 自定义广告站',
+                'site_logo' => '',
+                'site_favicon' => '',
+                'seo_title_template' => '{title} - {site_name}',
+                'seo_description_template' => '{description}',
+                'featured_limit' => 6,
+                'per_page' => 12,
+                'article_text_ad_policy' => [
+                    'content_top' => [
+                        'mode' => 'custom',
+                        'custom_modules' => [
+                            [
+                                'name' => '渠道顶部推荐',
+                                'placement' => 'content_top',
+                                'enabled' => '1',
+                                'sort_order' => 10,
+                                'links' => [
+                                    [
+                                        'text' => '渠道独立统计链接',
+                                        'url' => 'https://custom.example.com/landing',
+                                        'text_color' => '#dc2626',
+                                        'open_new_tab' => '1',
+                                        'tracking_enabled' => '1',
+                                        'tracking_param' => 'utm_source=custom_channel',
+                                        'enabled' => '1',
+                                        'sort_order' => 10,
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                    'content_bottom' => [
+                        'mode' => 'disabled',
+                    ],
+                ],
+            ])
+            ->assertRedirect(route('admin.distribution.show', ['channelId' => (int) $channel->id]));
+
+        $channel->refresh();
+        $policy = $channel->resolvedArticleTextAdPolicy();
+        $this->assertSame('custom', $policy['content_top']['mode']);
+        $this->assertCount(1, $policy['content_top']['custom_modules']);
+        $this->assertSame('渠道顶部推荐', $policy['content_top']['custom_modules'][0]['name']);
+
+        $payload = $channel->targetSiteSettingsPayload();
+        $this->assertCount(1, $payload['article_text_ads']);
+        $this->assertSame('渠道顶部推荐', $payload['article_text_ads'][0]['name']);
+        $this->assertSame('渠道独立统计链接', $payload['article_text_ads'][0]['links'][0]['text']);
+    }
+
+    public function test_distribution_channel_rejects_invalid_custom_article_text_ad_modules(): void
+    {
+        $admin = $this->admin();
+        $channel = DistributionChannel::query()->create([
+            'name' => '非法文本广告渠道',
+            'domain' => 'invalid-ads.example.com',
+            'endpoint_url' => 'https://invalid-ads.example.com',
+            'status' => 'active',
+        ]);
+
+        $this->actingAs($admin, 'admin')
+            ->from(route('admin.distribution.edit', ['channelId' => (int) $channel->id]))
+            ->put(route('admin.distribution.update', ['channelId' => (int) $channel->id]), [
+                'name' => '非法文本广告渠道',
+                'domain' => 'invalid-ads.example.com',
+                'endpoint_url' => 'https://invalid-ads.example.com',
+                'front_mode' => 'static',
+                'template_key' => 'default',
+                'status' => 'active',
+                'description' => '',
+                'site_name' => '非法广告站',
+                'site_subtitle' => '',
+                'site_description' => '非法广告站描述',
+                'site_keywords' => '',
+                'copyright_info' => '© 2026 非法广告站',
+                'site_logo' => '',
+                'site_favicon' => '',
+                'seo_title_template' => '{title} - {site_name}',
+                'seo_description_template' => '{description}',
+                'featured_limit' => 6,
+                'per_page' => 12,
+                'article_text_ad_policy' => [
+                    'content_top' => [
+                        'mode' => 'custom',
+                        'custom_modules' => [
+                            [
+                                'name' => '非法渠道模块',
+                                'placement' => 'content_top',
+                                'enabled' => '1',
+                                'links' => [
+                                    [
+                                        'text' => '危险链接',
+                                        'url' => 'javascript:alert(1)',
+                                        'text_color' => '#2563eb',
+                                        'enabled' => '1',
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                    'content_bottom' => [
+                        'mode' => 'disabled',
+                    ],
+                ],
+            ])
+            ->assertRedirect(route('admin.distribution.edit', ['channelId' => (int) $channel->id]))
+            ->assertSessionHasErrors('article_text_ad_policy');
+
+        $channel->refresh();
+        $this->assertSame([], $channel->channel_config ?? []);
+    }
+
     public function test_admin_update_distribution_channel_syncs_remote_site_settings_when_secret_exists(): void
     {
         Http::fake([
@@ -842,6 +1193,250 @@ class AdminDistributionPageTest extends TestCase
         Http::assertSent(fn ($request): bool => $request->url() === 'https://example.com/geoflow/geoflow-agent/v1/site-settings');
         Http::assertSent(fn ($request): bool => $request->url() === 'https://example.com/geoflow/index.php/geoflow-agent/v1/site-settings'
             && $request->hasHeader('X-GEOFlow-Event', 'site.settings.update'));
+    }
+
+    public function test_admin_can_sync_all_active_geoflow_agent_channel_settings(): void
+    {
+        Queue::fake();
+        Http::fake([
+            'https://one.example.com/geoflow-agent/v1/site-settings' => Http::response([
+                'ok' => true,
+                'updated' => true,
+            ]),
+            'https://two.example.com/geoflow-agent/v1/site-settings' => Http::response([
+                'ok' => true,
+                'updated' => true,
+            ]),
+        ]);
+
+        $fixtures = $this->taskFixtures();
+        $first = DistributionChannel::query()->create([
+            'name' => '一号站',
+            'domain' => 'one.example.com',
+            'endpoint_url' => 'https://one.example.com',
+            'channel_type' => 'geoflow_agent',
+            'status' => 'active',
+        ]);
+        DistributionChannelSecret::query()->create([
+            'distribution_channel_id' => (int) $first->id,
+            'key_id' => 'gfk_sync_all_one',
+            'secret_ciphertext' => app(ApiKeyCrypto::class)->encrypt('gfsec_sync_all_one_secret'),
+            'status' => 'active',
+            'scopes' => ['site.settings.update'],
+        ]);
+        $article = Article::query()->create([
+            'title' => '需要刷新 SEO 的文章',
+            'slug' => 'refresh-seo-article',
+            'excerpt' => '摘要',
+            'content' => '正文',
+            'category_id' => (int) $fixtures['category']->id,
+            'author_id' => (int) $fixtures['author']->id,
+            'status' => 'published',
+            'review_status' => 'approved',
+            'published_at' => now(),
+        ]);
+        ArticleDistribution::query()->create([
+            'article_id' => (int) $article->id,
+            'distribution_channel_id' => (int) $first->id,
+            'action' => 'publish',
+            'status' => 'synced',
+            'remote_url' => 'https://one.example.com/article/refresh-seo-article',
+            'idempotency_key' => 'old-sync-all-key',
+        ]);
+
+        $second = DistributionChannel::query()->create([
+            'name' => '二号站',
+            'domain' => 'two.example.com',
+            'endpoint_url' => 'https://two.example.com',
+            'channel_type' => 'geoflow_agent',
+            'status' => 'active',
+        ]);
+        DistributionChannelSecret::query()->create([
+            'distribution_channel_id' => (int) $second->id,
+            'key_id' => 'gfk_sync_all_two',
+            'secret_ciphertext' => app(ApiKeyCrypto::class)->encrypt('gfsec_sync_all_two_secret'),
+            'status' => 'active',
+            'scopes' => ['site.settings.update'],
+        ]);
+
+        $wordpress = DistributionChannel::query()->create([
+            'name' => 'WordPress',
+            'domain' => 'wp.example.com',
+            'endpoint_url' => 'https://wp.example.com',
+            'channel_type' => 'wordpress_rest',
+            'status' => 'active',
+        ]);
+        DistributionChannelSecret::query()->create([
+            'distribution_channel_id' => (int) $wordpress->id,
+            'key_id' => 'gfk_sync_all_wp',
+            'secret_ciphertext' => app(ApiKeyCrypto::class)->encrypt('gfsec_sync_all_wp_secret'),
+            'status' => 'active',
+            'scopes' => ['site.settings.update'],
+        ]);
+
+        $paused = DistributionChannel::query()->create([
+            'name' => '暂停站',
+            'domain' => 'paused.example.com',
+            'endpoint_url' => 'https://paused.example.com',
+            'channel_type' => 'geoflow_agent',
+            'status' => 'paused',
+        ]);
+        DistributionChannelSecret::query()->create([
+            'distribution_channel_id' => (int) $paused->id,
+            'key_id' => 'gfk_sync_all_paused',
+            'secret_ciphertext' => app(ApiKeyCrypto::class)->encrypt('gfsec_sync_all_paused_secret'),
+            'status' => 'active',
+            'scopes' => ['site.settings.update'],
+        ]);
+
+        $this->actingAs($this->admin(), 'admin')
+            ->post(route('admin.distribution.sync-settings-all'))
+            ->assertRedirect()
+            ->assertSessionHas('message', __('admin.distribution.message.settings_synced_all', [
+                'success' => 2,
+                'failed' => 0,
+                'refresh' => 1,
+            ]));
+
+        Http::assertSentCount(2);
+        Http::assertSent(fn ($request): bool => $request->url() === 'https://one.example.com/geoflow-agent/v1/site-settings'
+            && $request->hasHeader('X-GEOFlow-Event', 'site.settings.update'));
+        Http::assertSent(fn ($request): bool => $request->url() === 'https://two.example.com/geoflow-agent/v1/site-settings'
+            && $request->hasHeader('X-GEOFlow-Event', 'site.settings.update'));
+
+        $this->assertDatabaseHas('distribution_logs', [
+            'distribution_channel_id' => (int) $first->id,
+            'event' => 'site.settings.synced',
+        ]);
+        $this->assertDatabaseHas('distribution_logs', [
+            'distribution_channel_id' => (int) $second->id,
+            'event' => 'site.settings.synced',
+        ]);
+        $this->assertDatabaseHas('distribution_logs', [
+            'distribution_channel_id' => (int) $first->id,
+            'event' => 'target.content_refresh_queued',
+        ]);
+        $this->assertDatabaseHas('article_distributions', [
+            'article_id' => (int) $article->id,
+            'distribution_channel_id' => (int) $first->id,
+            'action' => 'update',
+            'status' => 'queued',
+        ]);
+        Queue::assertPushed(ProcessArticleDistributionJob::class, 1);
+    }
+
+    public function test_admin_can_sync_selected_active_geoflow_agent_channel_settings(): void
+    {
+        Queue::fake();
+        Http::fake([
+            'https://selected-one.example.com/geoflow-agent/v1/site-settings' => Http::response([
+                'ok' => true,
+                'updated' => true,
+            ]),
+            'https://selected-two.example.com/geoflow-agent/v1/site-settings' => Http::response([
+                'ok' => true,
+                'updated' => true,
+            ]),
+            '*' => Http::response(['ok' => false], 500),
+        ]);
+
+        $first = DistributionChannel::query()->create([
+            'name' => '所选一号站',
+            'domain' => 'selected-one.example.com',
+            'endpoint_url' => 'https://selected-one.example.com',
+            'channel_type' => 'geoflow_agent',
+            'status' => 'active',
+        ]);
+        DistributionChannelSecret::query()->create([
+            'distribution_channel_id' => (int) $first->id,
+            'key_id' => 'gfk_sync_selected_one',
+            'secret_ciphertext' => app(ApiKeyCrypto::class)->encrypt('gfsec_sync_selected_one_secret'),
+            'status' => 'active',
+            'scopes' => ['site.settings.update'],
+        ]);
+
+        $second = DistributionChannel::query()->create([
+            'name' => '所选二号站',
+            'domain' => 'selected-two.example.com',
+            'endpoint_url' => 'https://selected-two.example.com',
+            'channel_type' => 'geoflow_agent',
+            'status' => 'active',
+        ]);
+        DistributionChannelSecret::query()->create([
+            'distribution_channel_id' => (int) $second->id,
+            'key_id' => 'gfk_sync_selected_two',
+            'secret_ciphertext' => app(ApiKeyCrypto::class)->encrypt('gfsec_sync_selected_two_secret'),
+            'status' => 'active',
+            'scopes' => ['site.settings.update'],
+        ]);
+
+        $unselected = DistributionChannel::query()->create([
+            'name' => '未选择站点',
+            'domain' => 'unselected.example.com',
+            'endpoint_url' => 'https://unselected.example.com',
+            'channel_type' => 'geoflow_agent',
+            'status' => 'active',
+        ]);
+        DistributionChannelSecret::query()->create([
+            'distribution_channel_id' => (int) $unselected->id,
+            'key_id' => 'gfk_sync_selected_unselected',
+            'secret_ciphertext' => app(ApiKeyCrypto::class)->encrypt('gfsec_sync_selected_unselected_secret'),
+            'status' => 'active',
+            'scopes' => ['site.settings.update'],
+        ]);
+
+        $wordpress = DistributionChannel::query()->create([
+            'name' => 'WordPress',
+            'domain' => 'wp-selected.example.com',
+            'endpoint_url' => 'https://wp-selected.example.com',
+            'channel_type' => 'wordpress_rest',
+            'status' => 'active',
+        ]);
+
+        $paused = DistributionChannel::query()->create([
+            'name' => '暂停站',
+            'domain' => 'paused-selected.example.com',
+            'endpoint_url' => 'https://paused-selected.example.com',
+            'channel_type' => 'geoflow_agent',
+            'status' => 'paused',
+        ]);
+
+        $this->actingAs($this->admin(), 'admin')
+            ->post(route('admin.distribution.sync-settings-selected'), [
+                'channel_ids' => [
+                    (int) $first->id,
+                    (int) $second->id,
+                    (int) $unselected->id + 9999,
+                    (int) $wordpress->id,
+                    (int) $paused->id,
+                ],
+            ])
+            ->assertRedirect()
+            ->assertSessionHas('message', __('admin.distribution.message.settings_synced_selected', [
+                'success' => 2,
+                'failed' => 0,
+                'refresh' => 0,
+            ]));
+
+        Http::assertSentCount(2);
+        Http::assertSent(fn ($request): bool => $request->url() === 'https://selected-one.example.com/geoflow-agent/v1/site-settings'
+            && $request->hasHeader('X-GEOFlow-Event', 'site.settings.update'));
+        Http::assertSent(fn ($request): bool => $request->url() === 'https://selected-two.example.com/geoflow-agent/v1/site-settings'
+            && $request->hasHeader('X-GEOFlow-Event', 'site.settings.update'));
+        Http::assertNotSent(fn ($request): bool => str_contains($request->url(), 'unselected.example.com'));
+        Http::assertNotSent(fn ($request): bool => str_contains($request->url(), 'wp-selected.example.com'));
+        Http::assertNotSent(fn ($request): bool => str_contains($request->url(), 'paused-selected.example.com'));
+        Queue::assertNotPushed(ProcessArticleDistributionJob::class);
+    }
+
+    public function test_admin_must_select_at_least_one_channel_for_selected_settings_sync(): void
+    {
+        $this->actingAs($this->admin(), 'admin')
+            ->post(route('admin.distribution.sync-settings-selected'), [
+                'channel_ids' => [],
+            ])
+            ->assertRedirect()
+            ->assertSessionHasErrors();
     }
 
     public function test_admin_can_pause_distribution_channel_and_hide_it_from_task_form(): void
@@ -1172,6 +1767,26 @@ class AdminDistributionPageTest extends TestCase
 
     public function test_super_admin_can_download_channel_target_site_package_with_current_password(): void
     {
+        SiteSetting::query()->updateOrCreate(
+            ['setting_key' => 'article_detail_text_ads'],
+            ['setting_value' => json_encode([
+                [
+                    'id' => 'package-text-ad',
+                    'name' => 'Package Text Ad',
+                    'placement' => 'content_top',
+                    'text' => 'Package CTA',
+                    'url' => '/package-offer',
+                    'text_color' => '#2563eb',
+                    'open_new_tab' => false,
+                    'tracking_enabled' => false,
+                    'tracking_param' => '',
+                    'enabled' => true,
+                    'sort_order' => 10,
+                ],
+            ], JSON_UNESCAPED_UNICODE)]
+        );
+        SiteSettingsBag::forget();
+
         $channel = DistributionChannel::query()->create([
             'name' => '官网主站',
             'domain' => 'example.com',
@@ -1227,12 +1842,24 @@ class AdminDistributionPageTest extends TestCase
         $this->assertStringContainsString("'copyright_info' => '© 2026 远程门户'", $config);
         $this->assertStringContainsString("'active_theme' => 'toutiao-news-20260426'", $config);
         $this->assertStringContainsString("'per_page' => 14", $config);
+        $this->assertStringContainsString("'article_text_ads' =>", $config);
+        $this->assertStringContainsString("'Package CTA'", $config);
 
         $rootIndex = (string) $zip->getFromName('index.php');
         $this->assertStringContainsString("require __DIR__.'/public/index.php';", $rootIndex);
 
         $staticIndex = (string) $zip->getFromName('index.html');
         $this->assertStringContainsString('远程门户', $staticIndex);
+        $this->assertStringContainsString('<title>首页 - 远程门户</title>', $staticIndex);
+        $this->assertStringContainsString('<meta name="description" content="远程站点描述 - 远程门户">', $staticIndex);
+        $this->assertStringContainsString('<meta name="keywords" content="geo,remote">', $staticIndex);
+        $this->assertStringContainsString('<link rel="canonical" href="https://example.com/">', $staticIndex);
+        $this->assertStringContainsString('<meta property="og:title" content="首页 - 远程门户">', $staticIndex);
+        $this->assertStringContainsString('<meta property="og:description" content="远程站点描述 - 远程门户">', $staticIndex);
+        $this->assertStringContainsString('<meta property="og:type" content="website">', $staticIndex);
+        $this->assertStringContainsString('<meta property="og:url" content="https://example.com/">', $staticIndex);
+        $this->assertStringContainsString('<meta property="og:site_name" content="远程门户">', $staticIndex);
+        $this->assertStringContainsString('<link rel="icon" href="https://example.com/favicon.ico">', $staticIndex);
         $this->assertStringContainsString('暂无文章', $staticIndex);
         $this->assertStringContainsString('assets/css/site.css', $staticIndex);
         $this->assertStringContainsString('class="target-theme-toutiao"', $staticIndex);
@@ -1298,14 +1925,33 @@ class AdminDistributionPageTest extends TestCase
         $this->assertStringContainsString('function markdownToHtml', $frontController);
         $this->assertStringContainsString('function stripLeadingTitleHeading', $frontController);
         $this->assertStringContainsString('function keywordTags', $frontController);
+        $this->assertStringContainsString('function articleMetaDescription', $frontController);
+        $this->assertStringContainsString('function articleMetaKeywords', $frontController);
+        $this->assertStringContainsString('function pageSeoPayload', $frontController);
+        $this->assertStringContainsString('$pageTitle = $isArticle', $frontController);
+        $this->assertStringContainsString('$description = $isArticle && $hasMetaDescription && $metaDescription !== \'\'', $frontController);
+        $this->assertStringContainsString('og:site_name', $frontController);
+        $this->assertStringContainsString('pageHeader($config, $title, [', $frontController);
+        $this->assertStringContainsString("array_key_exists('keywords', \$pageMeta)", $frontController);
+        $this->assertStringContainsString("'canonical_url' => \$articleUrl", $frontController);
+        $this->assertStringContainsString("'og_type' => 'article'", $frontController);
         $this->assertStringContainsString("preg_match('~^(?:https?://|/|#)~i'", $frontController);
         $this->assertStringNotContainsString("preg_match('#^(https?://|/|#)#i'", $frontController);
         $this->assertStringContainsString("article['content_html']", $frontController);
         $this->assertStringContainsString('article-table-wrap', $frontController);
         $this->assertStringContainsString('class="tags"', $frontController);
         $this->assertStringContainsString('.content h2', $siteCss);
+        $this->assertStringContainsString('.article-text-ads', $siteCss);
+        $this->assertStringContainsString('.article-text-ad-module', $siteCss);
         $this->assertStringContainsString('function activeTheme', $frontController);
         $this->assertStringContainsString('function themeClass', $frontController);
+        $this->assertStringContainsString('function normalizeArticleTextAds', $frontController);
+        $this->assertStringContainsString('function normalizeArticleTextAdLinks', $frontController);
+        $this->assertStringContainsString('function renderArticleTextAds', $frontController);
+        $this->assertStringContainsString('data-module-id', $frontController);
+        $this->assertStringContainsString("str_ends_with(\$baseUrl, '?')", $frontController);
+        $this->assertStringContainsString("renderArticleTextAds(\$settings, 'content_top')", $frontController);
+        $this->assertStringContainsString("renderArticleTextAds(\$settings, 'content_bottom')", $frontController);
         $this->assertStringNotContainsString('function themeStyles', $frontController);
         $this->assertStringContainsString('target-theme-toutiao', $frontController);
         $this->assertStringContainsString('activeTheme($settings)', $frontController);
@@ -1324,6 +1970,8 @@ class AdminDistributionPageTest extends TestCase
         $this->assertStringContainsString('function localizeArticleAssets', $frontController);
         $this->assertStringContainsString('application/ld+json', $frontController);
         $this->assertStringContainsString('"@type"=>"Article"', $frontController);
+        $this->assertStringContainsString('"description"=>$articleDescription', $frontController);
+        $this->assertStringContainsString('"mainEntityOfPage"=>$articleUrl', $frontController);
         $this->assertStringContainsString('assets/images', $frontController);
         $this->assertStringContainsString('assets/css/site.css', $frontController);
         $this->assertStringNotContainsString('<style>', $frontController);
@@ -1428,6 +2076,11 @@ class AdminDistributionPageTest extends TestCase
         $this->assertStringContainsString("'public_base_url' => 'https://example.com/geoflow-target-site/index.php'", $config);
         $this->assertStringContainsString("'base_path' => '/geoflow-target-site'", $config);
         $this->assertStringContainsString("'front_mode' => 'static'", $config);
+
+        $staticIndex = (string) $zip->getFromName('index.html');
+        $this->assertStringContainsString('<link rel="canonical" href="https://example.com/geoflow-target-site/">', $staticIndex);
+        $this->assertStringContainsString('<meta property="og:url" content="https://example.com/geoflow-target-site/">', $staticIndex);
+        $this->assertStringNotContainsString('https://example.com/geoflow-target-site/index.php/', $staticIndex);
 
         $nginxRewrite = (string) $zip->getFromName('nginx.rewrite.conf');
         $this->assertStringContainsString('location = /geoflow-target-site/', $nginxRewrite);
@@ -1714,16 +2367,27 @@ class AdminDistributionPageTest extends TestCase
             ->assertSee('example.com')
             ->assertSee('本地和渠道站点同时发布')
             ->assertSee('仅发布到渠道站点')
-            ->assertSee('仅发布到本站');
+            ->assertSee('仅发布到本站')
+            ->assertSee(__('admin.task_create.distribution.strategy_broadcast'))
+            ->assertSee(__('admin.task_create.distribution.strategy_round_robin'))
+            ->assertSee(__('admin.task_create.distribution.strategy_random_balanced'))
+            ->assertSee(__('admin.task_create.button.distribution_channel_select_all'));
     }
 
     public function test_task_creation_persists_selected_distribution_channels(): void
     {
         $fixtures = $this->taskFixtures();
-        $channel = DistributionChannel::query()->create([
+        $channelOne = DistributionChannel::query()->create([
             'name' => '官网主站',
             'domain' => 'example.com',
             'endpoint_url' => 'https://example.com',
+            'template_key' => 'default',
+            'status' => 'active',
+        ]);
+        $channelTwo = DistributionChannel::query()->create([
+            'name' => '备用站点',
+            'domain' => 'backup.example.com',
+            'endpoint_url' => 'https://backup.example.com',
             'template_key' => 'default',
             'status' => 'active',
         ]);
@@ -1743,15 +2407,24 @@ class AdminDistributionPageTest extends TestCase
                 'publish_interval' => 60,
                 'category_mode' => 'fixed',
                 'model_selection_mode' => 'fixed',
-                'distribution_channel_ids' => [(string) $channel->id],
+                'distribution_strategy' => TaskDistributionChannelSelector::STRATEGY_ROUND_ROBIN,
+                'distribution_channel_ids' => [(string) $channelTwo->id, (string) $channelOne->id, (string) $channelTwo->id],
             ])
             ->assertRedirect(route('admin.tasks.index'));
 
         $task = Task::query()->where('name', '分发任务')->firstOrFail();
         $this->assertSame('distribution_only', (string) $task->publish_scope);
+        $this->assertSame(TaskDistributionChannelSelector::STRATEGY_ROUND_ROBIN, (string) $task->distribution_strategy);
+        $this->assertSame(2, $task->distributionChannels()->count());
         $this->assertDatabaseHas('task_distribution_channels', [
             'task_id' => (int) $task->id,
-            'distribution_channel_id' => (int) $channel->id,
+            'distribution_channel_id' => (int) $channelTwo->id,
+            'sort_order' => 0,
+        ]);
+        $this->assertDatabaseHas('task_distribution_channels', [
+            'task_id' => (int) $task->id,
+            'distribution_channel_id' => (int) $channelOne->id,
+            'sort_order' => 1,
         ]);
     }
 
@@ -1845,6 +2518,271 @@ class AdminDistributionPageTest extends TestCase
             'status' => 'queued',
         ]);
         Queue::assertPushed(ProcessArticleDistributionJob::class);
+    }
+
+    public function test_broadcast_distribution_backfills_newly_selected_channels_for_existing_article(): void
+    {
+        Queue::fake();
+
+        $fixtures = $this->taskFixtures();
+        $channelOne = DistributionChannel::query()->create([
+            'name' => '广播站点 1',
+            'domain' => 'broadcast-1.example.com',
+            'endpoint_url' => 'https://broadcast-1.example.com',
+            'status' => 'active',
+        ]);
+        $channelTwo = DistributionChannel::query()->create([
+            'name' => '广播站点 2',
+            'domain' => 'broadcast-2.example.com',
+            'endpoint_url' => 'https://broadcast-2.example.com',
+            'status' => 'active',
+        ]);
+        $task = Task::query()->create([
+            'name' => '广播补发任务',
+            'title_library_id' => $fixtures['title_library']->id,
+            'prompt_id' => $fixtures['prompt']->id,
+            'ai_model_id' => $fixtures['ai_model']->id,
+            'status' => 'active',
+            'schedule_enabled' => 1,
+            'publish_scope' => 'distribution_only',
+            'distribution_strategy' => TaskDistributionChannelSelector::STRATEGY_BROADCAST,
+            'publish_interval' => 3600,
+            'draft_limit' => 5,
+            'article_limit' => 10,
+        ]);
+        $article = Article::query()->create([
+            'title' => '广播补发文章',
+            'slug' => 'broadcast-backfill-article',
+            'excerpt' => '摘要',
+            'content' => '正文',
+            'category_id' => $fixtures['category']->id,
+            'author_id' => $fixtures['author']->id,
+            'task_id' => (int) $task->id,
+            'status' => 'published',
+            'review_status' => 'approved',
+            'published_at' => now(),
+        ]);
+
+        $orchestrator = app(DistributionOrchestrator::class);
+        $orchestrator->syncTaskChannels($task, [(int) $channelOne->id]);
+        $orchestrator->enqueueForArticle($article);
+
+        $orchestrator->syncTaskChannels($task->fresh(), [(int) $channelOne->id, (int) $channelTwo->id]);
+        $orchestrator->enqueueForArticle($article);
+
+        $this->assertSame(
+            [(int) $channelOne->id, (int) $channelTwo->id],
+            ArticleDistribution::query()
+                ->where('article_id', (int) $article->id)
+                ->orderBy('distribution_channel_id')
+                ->pluck('distribution_channel_id')
+                ->map(static fn ($id): int => (int) $id)
+                ->all()
+        );
+    }
+
+    public function test_round_robin_distribution_sends_each_article_to_one_channel_in_order(): void
+    {
+        Queue::fake();
+
+        $fixtures = $this->taskFixtures();
+        $channels = collect(range(1, 3))->map(fn (int $index): DistributionChannel => DistributionChannel::query()->create([
+            'name' => '轮询站点 '.$index,
+            'domain' => 'round-robin-'.$index.'.example.com',
+            'endpoint_url' => 'https://round-robin-'.$index.'.example.com',
+            'status' => 'active',
+        ]));
+        $task = Task::query()->create([
+            'name' => '轮询分发任务',
+            'title_library_id' => $fixtures['title_library']->id,
+            'prompt_id' => $fixtures['prompt']->id,
+            'ai_model_id' => $fixtures['ai_model']->id,
+            'status' => 'active',
+            'schedule_enabled' => 1,
+            'publish_scope' => 'distribution_only',
+            'distribution_strategy' => TaskDistributionChannelSelector::STRATEGY_ROUND_ROBIN,
+            'publish_interval' => 3600,
+            'draft_limit' => 5,
+            'article_limit' => 10,
+        ]);
+        $task->distributionChannels()->sync($channels->values()->mapWithKeys(
+            static fn (DistributionChannel $channel, int $index): array => [(int) $channel->id => ['sort_order' => $index]]
+        )->all());
+
+        $expectedChannelIds = [
+            (int) $channels[0]->id,
+            (int) $channels[1]->id,
+            (int) $channels[2]->id,
+            (int) $channels[0]->id,
+        ];
+
+        foreach (range(1, 4) as $index) {
+            $article = Article::query()->create([
+                'title' => '轮询文章 '.$index,
+                'slug' => 'round-robin-article-'.$index,
+                'excerpt' => '摘要',
+                'content' => '正文',
+                'category_id' => $fixtures['category']->id,
+                'author_id' => $fixtures['author']->id,
+                'task_id' => (int) $task->id,
+                'status' => 'published',
+                'review_status' => 'approved',
+                'published_at' => now(),
+            ]);
+
+            app(DistributionOrchestrator::class)->enqueueForArticle($article);
+
+            $this->assertSame(
+                [$expectedChannelIds[$index - 1]],
+                ArticleDistribution::query()
+                    ->where('article_id', (int) $article->id)
+                    ->pluck('distribution_channel_id')
+                    ->map(static fn ($id): int => (int) $id)
+                    ->all()
+            );
+        }
+
+        $this->assertSame(4, (int) $task->fresh()->distribution_cursor);
+    }
+
+    public function test_random_balanced_distribution_spreads_articles_across_selected_channels(): void
+    {
+        Queue::fake();
+
+        $fixtures = $this->taskFixtures();
+        $channels = collect(range(1, 3))->map(fn (int $index): DistributionChannel => DistributionChannel::query()->create([
+            'name' => '均衡站点 '.$index,
+            'domain' => 'balanced-'.$index.'.example.com',
+            'endpoint_url' => 'https://balanced-'.$index.'.example.com',
+            'status' => 'active',
+        ]));
+        $task = Task::query()->create([
+            'name' => '随机均衡分发任务',
+            'title_library_id' => $fixtures['title_library']->id,
+            'prompt_id' => $fixtures['prompt']->id,
+            'ai_model_id' => $fixtures['ai_model']->id,
+            'status' => 'active',
+            'schedule_enabled' => 1,
+            'publish_scope' => 'distribution_only',
+            'distribution_strategy' => TaskDistributionChannelSelector::STRATEGY_RANDOM_BALANCED,
+            'publish_interval' => 3600,
+            'draft_limit' => 5,
+            'article_limit' => 10,
+        ]);
+        $task->distributionChannels()->sync($channels->values()->mapWithKeys(
+            static fn (DistributionChannel $channel, int $index): array => [(int) $channel->id => ['sort_order' => $index]]
+        )->all());
+
+        foreach (range(1, 6) as $index) {
+            $article = Article::query()->create([
+                'title' => '均衡文章 '.$index,
+                'slug' => 'balanced-article-'.$index,
+                'excerpt' => '摘要',
+                'content' => '正文',
+                'category_id' => $fixtures['category']->id,
+                'author_id' => $fixtures['author']->id,
+                'task_id' => (int) $task->id,
+                'status' => 'published',
+                'review_status' => 'approved',
+                'published_at' => now(),
+            ]);
+
+            app(DistributionOrchestrator::class)->enqueueForArticle($article);
+
+            $this->assertSame(1, ArticleDistribution::query()->where('article_id', (int) $article->id)->count());
+        }
+
+        $counts = ArticleDistribution::query()
+            ->whereIn('distribution_channel_id', $channels->pluck('id')->map(static fn ($id): int => (int) $id)->all())
+            ->selectRaw('distribution_channel_id, COUNT(*) as aggregate_count')
+            ->groupBy('distribution_channel_id')
+            ->pluck('aggregate_count', 'distribution_channel_id')
+            ->map(static fn ($count): int => (int) $count)
+            ->sort()
+            ->values()
+            ->all();
+
+        $this->assertSame([2, 2, 2], $counts);
+    }
+
+    public function test_distribution_strategy_reuses_existing_article_channel_without_advancing_cursor(): void
+    {
+        Queue::fake();
+
+        $fixtures = $this->taskFixtures();
+        $channelOne = DistributionChannel::query()->create([
+            'name' => '复用站点 1',
+            'domain' => 'reuse-1.example.com',
+            'endpoint_url' => 'https://reuse-1.example.com',
+            'status' => 'active',
+        ]);
+        $channelTwo = DistributionChannel::query()->create([
+            'name' => '复用站点 2',
+            'domain' => 'reuse-2.example.com',
+            'endpoint_url' => 'https://reuse-2.example.com',
+            'status' => 'active',
+        ]);
+        $task = Task::query()->create([
+            'name' => '复用渠道分发任务',
+            'title_library_id' => $fixtures['title_library']->id,
+            'prompt_id' => $fixtures['prompt']->id,
+            'ai_model_id' => $fixtures['ai_model']->id,
+            'status' => 'active',
+            'schedule_enabled' => 1,
+            'publish_scope' => 'distribution_only',
+            'distribution_strategy' => TaskDistributionChannelSelector::STRATEGY_ROUND_ROBIN,
+            'publish_interval' => 3600,
+            'draft_limit' => 5,
+            'article_limit' => 10,
+        ]);
+        $task->distributionChannels()->sync([
+            (int) $channelOne->id => ['sort_order' => 0],
+            (int) $channelTwo->id => ['sort_order' => 1],
+        ]);
+
+        $firstArticle = Article::query()->create([
+            'title' => '复用文章 1',
+            'slug' => 'reuse-article-1',
+            'excerpt' => '摘要',
+            'content' => '正文',
+            'category_id' => $fixtures['category']->id,
+            'author_id' => $fixtures['author']->id,
+            'task_id' => (int) $task->id,
+            'status' => 'published',
+            'review_status' => 'approved',
+            'published_at' => now(),
+        ]);
+
+        app(DistributionOrchestrator::class)->enqueueForArticle($firstArticle);
+        app(DistributionOrchestrator::class)->enqueueForArticle($firstArticle);
+
+        $this->assertSame(1, ArticleDistribution::query()->where('article_id', (int) $firstArticle->id)->count());
+        $this->assertDatabaseHas('article_distributions', [
+            'article_id' => (int) $firstArticle->id,
+            'distribution_channel_id' => (int) $channelOne->id,
+        ]);
+        $this->assertSame(1, (int) $task->fresh()->distribution_cursor);
+
+        $secondArticle = Article::query()->create([
+            'title' => '复用文章 2',
+            'slug' => 'reuse-article-2',
+            'excerpt' => '摘要',
+            'content' => '正文',
+            'category_id' => $fixtures['category']->id,
+            'author_id' => $fixtures['author']->id,
+            'task_id' => (int) $task->id,
+            'status' => 'published',
+            'review_status' => 'approved',
+            'published_at' => now(),
+        ]);
+
+        app(DistributionOrchestrator::class)->enqueueForArticle($secondArticle);
+
+        $this->assertDatabaseHas('article_distributions', [
+            'article_id' => (int) $secondArticle->id,
+            'distribution_channel_id' => (int) $channelTwo->id,
+        ]);
+        $this->assertSame(2, (int) $task->fresh()->distribution_cursor);
     }
 
     public function test_distribution_scope_controls_remote_queue_visibility(): void

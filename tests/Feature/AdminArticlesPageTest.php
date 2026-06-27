@@ -12,6 +12,7 @@ use App\Models\DistributionChannel;
 use App\Models\Image;
 use App\Models\ImageLibrary;
 use App\Models\SiteSetting;
+use App\Support\AdminWeb;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
@@ -99,8 +100,8 @@ class AdminArticlesPageTest extends TestCase
             ->assertOk()
             ->assertSee('vendor/vditor/dist/index.min.js', false)
             ->assertSee('vendor/cropperjs/cropper.min.js', false)
-            ->assertSee(route('admin.articles.editor.images.upload', ['articleId' => (int) $article->id], false), false)
-            ->assertSee(route('admin.articles.editor.wechat-html', [], false), false)
+            ->assertSee(AdminWeb::routePath('admin.articles.editor.images.upload', ['articleId' => (int) $article->id]), false)
+            ->assertSee(AdminWeb::routePath('admin.articles.editor.wechat-html'), false)
             ->assertSee('id="content-editor"', false)
             ->assertSee('id="article-editor-copy-markdown"', false)
             ->assertSee('id="article-editor-copy-wechat-html"', false)
@@ -359,6 +360,285 @@ class AdminArticlesPageTest extends TestCase
             ->assertSee(__('admin.distribution.article_status.synced'));
     }
 
+    public function test_article_list_can_filter_by_distribution_channels(): void
+    {
+        $admin = Admin::query()->create([
+            'username' => 'articles_distribution_filter_admin',
+            'password' => 'secret-123',
+            'email' => 'articles-distribution-filter@example.com',
+            'display_name' => 'Articles Distribution Filter Admin',
+            'role' => 'admin',
+            'status' => 'active',
+        ]);
+        $category = Category::query()->create([
+            'name' => '分发筛选分类',
+            'slug' => 'distribution-filter-category',
+        ]);
+        $author = Author::query()->create([
+            'name' => 'GEOFlow',
+        ]);
+        $channelOne = DistributionChannel::query()->create([
+            'name' => '渠道一',
+            'domain' => 'channel-one.example.com',
+            'endpoint_url' => 'https://channel-one.example.com/geoflow',
+            'status' => 'active',
+        ]);
+        $channelTwo = DistributionChannel::query()->create([
+            'name' => '渠道二',
+            'domain' => 'channel-two.example.com',
+            'endpoint_url' => 'https://channel-two.example.com/geoflow',
+            'status' => 'active',
+        ]);
+        $channelThree = DistributionChannel::query()->create([
+            'name' => '渠道三',
+            'domain' => 'channel-three.example.com',
+            'endpoint_url' => 'https://channel-three.example.com/geoflow',
+            'status' => 'active',
+        ]);
+        $articleOne = Article::query()->create([
+            'title' => '渠道一筛选文章',
+            'slug' => 'channel-one-filter-article',
+            'excerpt' => '摘要',
+            'content' => '正文',
+            'category_id' => $category->id,
+            'author_id' => $author->id,
+            'status' => 'published',
+            'review_status' => 'approved',
+            'published_at' => now(),
+        ]);
+        $articleTwo = Article::query()->create([
+            'title' => '渠道二筛选文章',
+            'slug' => 'channel-two-filter-article',
+            'excerpt' => '摘要',
+            'content' => '正文',
+            'category_id' => $category->id,
+            'author_id' => $author->id,
+            'status' => 'published',
+            'review_status' => 'approved',
+            'published_at' => now(),
+        ]);
+        $articleThree = Article::query()->create([
+            'title' => '渠道三筛选文章',
+            'slug' => 'channel-three-filter-article',
+            'excerpt' => '摘要',
+            'content' => '正文',
+            'category_id' => $category->id,
+            'author_id' => $author->id,
+            'status' => 'published',
+            'review_status' => 'approved',
+            'published_at' => now(),
+        ]);
+
+        ArticleDistribution::query()->create([
+            'article_id' => $articleOne->id,
+            'distribution_channel_id' => $channelOne->id,
+            'action' => 'publish',
+            'status' => 'synced',
+            'remote_url' => 'https://channel-one.example.com/article/one',
+            'idempotency_key' => 'article-list-filter-channel-one',
+        ]);
+        ArticleDistribution::query()->create([
+            'article_id' => $articleTwo->id,
+            'distribution_channel_id' => $channelTwo->id,
+            'action' => 'publish',
+            'status' => 'synced',
+            'remote_url' => 'https://channel-two.example.com/article/two',
+            'idempotency_key' => 'article-list-filter-channel-two',
+        ]);
+        ArticleDistribution::query()->create([
+            'article_id' => $articleThree->id,
+            'distribution_channel_id' => $channelThree->id,
+            'action' => 'publish',
+            'status' => 'synced',
+            'remote_url' => 'https://channel-three.example.com/article/three',
+            'idempotency_key' => 'article-list-filter-channel-three',
+        ]);
+
+        $this->actingAs($admin, 'admin')
+            ->get(route('admin.articles.index', [
+                'distribution_channel_ids' => [(int) $channelOne->id, (int) $channelTwo->id],
+            ]))
+            ->assertOk()
+            ->assertSee(__('admin.articles.filters.distribution_channel'))
+            ->assertSee(__('admin.articles.filters.distribution_channel_selected_count', ['count' => 2]))
+            ->assertSee(__('admin.articles.filters.distribution_channel_expand'))
+            ->assertSee('data-distribution-channel-filter-panel class="hidden grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3"', false)
+            ->assertSee('渠道一筛选文章')
+            ->assertSee('渠道一 · channel-one.example.com')
+            ->assertSee('https://channel-one.example.com/article/one', false)
+            ->assertSee('渠道二筛选文章')
+            ->assertSee('渠道二 · channel-two.example.com')
+            ->assertSee('https://channel-two.example.com/article/two', false)
+            ->assertDontSee('渠道三筛选文章')
+            ->assertDontSee('渠道三 · channel-three.example.com')
+            ->assertDontSee('https://channel-three.example.com/article/three', false);
+
+        $this->actingAs($admin, 'admin')
+            ->get(route('admin.articles.index', ['distribution_channel_id' => (int) $channelOne->id]))
+            ->assertOk()
+            ->assertSee('渠道一筛选文章')
+            ->assertDontSee('渠道二筛选文章')
+            ->assertDontSee('渠道三筛选文章');
+    }
+
+    public function test_article_list_view_button_prefers_valid_synced_remote_url(): void
+    {
+        $admin = Admin::query()->create([
+            'username' => 'articles_remote_view_admin',
+            'password' => 'secret-123',
+            'email' => 'articles-remote-view@example.com',
+            'display_name' => 'Articles Remote View Admin',
+            'role' => 'admin',
+            'status' => 'active',
+        ]);
+        $category = Category::query()->create([
+            'name' => '远端查看分类',
+            'slug' => 'remote-view-category',
+        ]);
+        $author = Author::query()->create([
+            'name' => 'GEOFlow',
+        ]);
+        $syncedChannel = DistributionChannel::query()->create([
+            'name' => '已同步渠道',
+            'domain' => 'synced.example.com',
+            'endpoint_url' => 'https://synced.example.com/geoflow',
+            'status' => 'active',
+        ]);
+        $failedChannel = DistributionChannel::query()->create([
+            'name' => '失败渠道',
+            'domain' => 'failed.example.com',
+            'endpoint_url' => 'https://failed.example.com/geoflow',
+            'status' => 'active',
+        ]);
+        $unsafeChannel = DistributionChannel::query()->create([
+            'name' => '异常渠道',
+            'domain' => 'unsafe.example.com',
+            'endpoint_url' => 'https://unsafe.example.com/geoflow',
+            'status' => 'active',
+        ]);
+        $malformedChannel = DistributionChannel::query()->create([
+            'name' => '非法链接渠道',
+            'domain' => 'malformed.example.com',
+            'endpoint_url' => 'https://malformed.example.com/geoflow',
+            'status' => 'active',
+        ]);
+        $deletedChannel = DistributionChannel::query()->create([
+            'name' => '已删除渠道',
+            'domain' => 'deleted.example.com',
+            'endpoint_url' => 'https://deleted.example.com/geoflow',
+            'status' => 'active',
+        ]);
+        $article = Article::query()->create([
+            'title' => '远端查看按钮文章',
+            'slug' => 'remote-view-button-article',
+            'excerpt' => '摘要',
+            'content' => '正文',
+            'category_id' => $category->id,
+            'author_id' => $author->id,
+            'status' => 'published',
+            'review_status' => 'approved',
+            'published_at' => now(),
+        ]);
+
+        ArticleDistribution::query()->create([
+            'article_id' => $article->id,
+            'distribution_channel_id' => $syncedChannel->id,
+            'action' => 'publish',
+            'status' => 'synced',
+            'remote_url' => 'https://synced.example.com/article/remote-view',
+            'idempotency_key' => 'article-list-view-synced',
+        ]);
+        ArticleDistribution::query()->create([
+            'article_id' => $article->id,
+            'distribution_channel_id' => $failedChannel->id,
+            'action' => 'publish',
+            'status' => 'failed',
+            'remote_url' => 'https://failed.example.com/article/should-not-show',
+            'idempotency_key' => 'article-list-view-failed',
+        ]);
+        ArticleDistribution::query()->create([
+            'article_id' => $article->id,
+            'distribution_channel_id' => $unsafeChannel->id,
+            'action' => 'publish',
+            'status' => 'synced',
+            'remote_url' => 'javascript:alert(1)',
+            'idempotency_key' => 'article-list-view-unsafe-url',
+        ]);
+        ArticleDistribution::query()->create([
+            'article_id' => $article->id,
+            'distribution_channel_id' => $malformedChannel->id,
+            'action' => 'publish',
+            'status' => 'synced',
+            'remote_url' => 'https://[bad-remote-url',
+            'idempotency_key' => 'article-list-view-malformed-url',
+        ]);
+        ArticleDistribution::query()->create([
+            'article_id' => $article->id,
+            'distribution_channel_id' => $deletedChannel->id,
+            'action' => 'delete',
+            'status' => 'synced',
+            'remote_url' => 'https://deleted.example.com/article/should-not-show',
+            'idempotency_key' => 'article-list-view-deleted-remote',
+        ]);
+
+        $this->actingAs($admin, 'admin')
+            ->get(route('admin.articles.index'))
+            ->assertOk()
+            ->assertSee(__('admin.articles.action.view_remote_for_channel', ['channel' => '已同步渠道']))
+            ->assertSee('https://synced.example.com/article/remote-view', false)
+            ->assertDontSee('https://failed.example.com/article/should-not-show', false)
+            ->assertDontSee('javascript:alert(1)', false)
+            ->assertDontSee('https://[bad-remote-url', false)
+            ->assertDontSee('https://deleted.example.com/article/should-not-show', false);
+    }
+
+    public function test_article_list_view_button_falls_back_to_local_published_article_url(): void
+    {
+        $admin = Admin::query()->create([
+            'username' => 'articles_local_view_admin',
+            'password' => 'secret-123',
+            'email' => 'articles-local-view@example.com',
+            'display_name' => 'Articles Local View Admin',
+            'role' => 'admin',
+            'status' => 'active',
+        ]);
+        $category = Category::query()->create([
+            'name' => '本站查看分类',
+            'slug' => 'local-view-category',
+        ]);
+        $author = Author::query()->create([
+            'name' => 'GEOFlow',
+        ]);
+        $article = Article::query()->create([
+            'title' => '本站查看按钮文章',
+            'slug' => 'local-view-button-article',
+            'excerpt' => '摘要',
+            'content' => '正文',
+            'category_id' => $category->id,
+            'author_id' => $author->id,
+            'status' => 'published',
+            'review_status' => 'approved',
+            'published_at' => now(),
+        ]);
+        Article::query()->create([
+            'title' => '草稿不应显示本站查看链接',
+            'slug' => 'draft-local-view-button-article',
+            'excerpt' => '摘要',
+            'content' => '正文',
+            'category_id' => $category->id,
+            'author_id' => $author->id,
+            'status' => 'draft',
+            'review_status' => 'pending',
+        ]);
+
+        $this->actingAs($admin, 'admin')
+            ->get(route('admin.articles.index'))
+            ->assertOk()
+            ->assertSee(__('admin.articles.action.view_local'))
+            ->assertSee(route('site.article', ['slug' => (string) $article->slug]), false)
+            ->assertDontSee(route('site.article', ['slug' => 'draft-local-view-button-article']), false);
+    }
+
     public function test_article_batch_urls_are_relative_when_app_url_differs_from_origin(): void
     {
         config(['app.url' => 'https://configured.example']);
@@ -396,9 +676,9 @@ class AdminArticlesPageTest extends TestCase
             ->getContent();
 
         foreach ([
-            route('admin.articles.batch.update-status', [], false),
-            route('admin.articles.batch.update-review', [], false),
-            route('admin.articles.batch.delete', [], false),
+            AdminWeb::routePath('admin.articles.batch.update-status'),
+            AdminWeb::routePath('admin.articles.batch.update-review'),
+            AdminWeb::routePath('admin.articles.batch.delete'),
         ] as $path) {
             $escapedPath = str_replace('/', '\\/', $path);
 
@@ -407,7 +687,7 @@ class AdminArticlesPageTest extends TestCase
             $this->assertStringNotContainsString('https:\/\/configured.example'.$escapedPath, $listHtml);
         }
         $this->assertStringContainsString(
-            'action="'.route('admin.articles.batch.update-status', [], false).'"',
+            'action="'.AdminWeb::routePath('admin.articles.batch.update-status').'"',
             $listHtml
         );
 
@@ -419,9 +699,9 @@ class AdminArticlesPageTest extends TestCase
             ->getContent();
 
         foreach ([
-            route('admin.articles.batch.restore', [], false),
-            route('admin.articles.batch.force-delete', [], false),
-            route('admin.articles.trash.empty', [], false),
+            AdminWeb::routePath('admin.articles.batch.restore'),
+            AdminWeb::routePath('admin.articles.batch.force-delete'),
+            AdminWeb::routePath('admin.articles.trash.empty'),
         ] as $path) {
             $escapedPath = str_replace('/', '\\/', $path);
 
@@ -429,6 +709,53 @@ class AdminArticlesPageTest extends TestCase
             $this->assertStringNotContainsString('https://configured.example'.$path, $trashHtml);
             $this->assertStringNotContainsString('https:\/\/configured.example'.$escapedPath, $trashHtml);
         }
+    }
+
+    public function test_article_batch_urls_keep_configured_subdirectory_without_absolute_host(): void
+    {
+        config(['app.url' => 'https://configured.example/geoflow']);
+
+        $admin = Admin::query()->create([
+            'username' => 'articles_subdirectory_batch_admin',
+            'password' => 'secret-123',
+            'email' => 'articles-subdirectory-batch@example.com',
+            'display_name' => 'Articles Subdirectory Batch Admin',
+            'role' => 'admin',
+            'status' => 'active',
+        ]);
+
+        $category = Category::query()->create([
+            'name' => '二级目录批量分类',
+            'slug' => 'subdirectory-batch-category',
+        ]);
+        $author = Author::query()->create([
+            'name' => 'GEOFlow',
+        ]);
+        Article::query()->create([
+            'title' => '二级目录批量路径文章',
+            'slug' => 'subdirectory-batch-actions-article',
+            'excerpt' => '摘要',
+            'content' => '正文',
+            'category_id' => $category->id,
+            'author_id' => $author->id,
+            'status' => 'published',
+            'review_status' => 'approved',
+            'published_at' => now(),
+        ]);
+
+        $html = $this->actingAs($admin, 'admin')
+            ->get(route('admin.articles.index'))
+            ->assertOk()
+            ->getContent();
+
+        $path = AdminWeb::routePath('admin.articles.batch.update-status');
+        $escapedPath = str_replace('/', '\\/', $path);
+
+        $this->assertStringStartsWith('/geoflow/', $path);
+        $this->assertStringContainsString('action="'.$path.'"', $html);
+        $this->assertStringContainsString($escapedPath, $html);
+        $this->assertStringNotContainsString('https://configured.example'.$path, $html);
+        $this->assertStringNotContainsString('https:\/\/configured.example'.$escapedPath, $html);
     }
 
     public function test_admin_brand_stays_geoflow_when_public_site_name_changes(): void

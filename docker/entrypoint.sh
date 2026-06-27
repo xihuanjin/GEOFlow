@@ -23,13 +23,13 @@ elif [ "${COMPOSER_ON_START}" = "true" ]; then
 fi
 
 if [ "${RUN_COMPOSER}" = "true" ]; then
-  # Packagist 中国镜像，加速 composer install。
-  COMPOSER_PACKAGIST_MIRROR="${COMPOSER_PACKAGIST_MIRROR:-https://mirrors.aliyun.com/composer/}"
   COMPOSER_HOME="${COMPOSER_HOME:-/tmp/composer}"
   export COMPOSER_HOME
   mkdir -p "${COMPOSER_HOME}"
-  if ! composer config -g repo.packagist composer "${COMPOSER_PACKAGIST_MIRROR}"; then
-    echo "[entrypoint] warning: failed to configure composer mirror, continue with default source"
+  if [ -n "${COMPOSER_PACKAGIST_MIRROR:-}" ]; then
+    if ! composer config -g repo.packagist composer "${COMPOSER_PACKAGIST_MIRROR}"; then
+      echo "[entrypoint] warning: failed to configure composer mirror, continue with default source"
+    fi
   fi
   echo "[entrypoint] composer install (COMPOSER_ON_START=${COMPOSER_ON_START}, vendor missing=$([ ! -f vendor/autoload.php ] && echo yes || echo no))"
   # 无有效 APP_KEY 时 composer 脚本会调 artisan（package:discover），易失败且留不下 vendor/autoload.php
@@ -41,21 +41,48 @@ if [ "${RUN_COMPOSER}" = "true" ]; then
   fi
 fi
 
-# 自动初始化 APP_KEY（仅在 .env 里缺失时生成，避免每次重置密钥）
-if [ "${AUTO_GENERATE_APP_KEY:-false}" = "true" ]; then
-  if ! grep -Eq '^APP_KEY=base64:' .env 2>/dev/null; then
-    php artisan key:generate --force --no-interaction
-  fi
+# .env 为可写挂载时，无密钥则自动生成（宿主机可无 PHP）。
+if ! grep -q '^APP_KEY=base64:' .env 2>/dev/null; then
+  echo "[entrypoint] php artisan key:generate --force"
+  php artisan key:generate --force --no-interaction
 fi
 
 if [ "${COMPOSER_NEED_POST_INSTALL}" = "true" ]; then
   composer dump-autoload --optimize --no-interaction
 fi
 
-mkdir -p storage/app/public storage/framework/cache/data storage/framework/sessions storage/framework/views storage/logs
+mkdir -p \
+  bootstrap/cache \
+  storage/app/public \
+  storage/app/public/uploads/images \
+  storage/app/tmp \
+  storage/framework/cache/data \
+  storage/framework/sessions \
+  storage/framework/views \
+  storage/logs
+
+if [ "${AUTO_FIX_STORAGE_PERMISSIONS:-true}" = "true" ]; then
+  if [ "$(id -u)" = "0" ]; then
+    RUNTIME_USER="${RUNTIME_USER:-www-data}"
+    RUNTIME_GROUP="${RUNTIME_GROUP:-www-data}"
+
+    echo "[entrypoint] fixing storage permissions for ${RUNTIME_USER}:${RUNTIME_GROUP}"
+    chown -R "${RUNTIME_USER}:${RUNTIME_GROUP}" storage bootstrap/cache
+    find storage bootstrap/cache -type d -exec chmod 775 {} \;
+    find storage bootstrap/cache -type f -exec chmod 664 {} \;
+  else
+    echo "[entrypoint] skip permission fix: container is not running as root"
+  fi
+fi
+
 if [ ! -e public/storage ]; then
   php artisan storage:link --force --no-interaction
 fi
+
+run_geoflow_install() {
+  echo "[entrypoint] php artisan geoflow:install"
+  php artisan geoflow:install --no-interaction
+}
 
 if [ "${DB_CONNECTION:-}" = "pgsql" ]; then
   DB_HOST_VALUE="${DB_HOST:-postgres}"
@@ -69,27 +96,24 @@ if [ "${DB_CONNECTION:-}" = "pgsql" ]; then
   done
 fi
 
-# 仅首次初始化（compose init 服务）：库尚不可连或尚无 migrations 表时 migrate + seed
+INIT_RAN_MIGRATE=false
+
+# 仅首次初始化（compose init 服务）：迁移可重复执行，安装填充由 geoflow:install 判断空库后只跑一次
 if [ "${AUTO_INIT_ONCE:-false}" = "true" ]; then
-  if php artisan migrate:status --no-interaction >/dev/null 2>&1; then
-    echo "[entrypoint] database already initialized, skip init migrate/seed"
-  else
-    echo "[entrypoint] first startup initialization: migrate + seed"
-    php artisan migrate --force --no-interaction
-    php artisan db:seed --force --no-interaction
-  fi
+  echo "[entrypoint] init service: migrate + geoflow:install"
+  php artisan migrate --force --no-interaction
+  INIT_RAN_MIGRATE=true
+  run_geoflow_install
+fi
+
+if [ "${AUTO_INSTALL_ONCE:-false}" = "true" ]; then
+  run_geoflow_install
 fi
 
 # 每次容器启动执行迁移（拉代码/换新镜像后默认需要；设为 false 可关闭）
-if [ "${AUTO_MIGRATE:-true}" = "true" ]; then
+if [ "${AUTO_MIGRATE:-true}" = "true" ] && [ "${INIT_RAN_MIGRATE}" != "true" ]; then
   echo "[entrypoint] php artisan migrate --force"
   php artisan migrate --force --no-interaction
-fi
-
-# 每次启动是否跑 seed（默认关；仅在你明确要重置演示数据时打开）
-if [ "${AUTO_SEED:-false}" = "true" ]; then
-  echo "[entrypoint] php artisan db:seed --force"
-  php artisan db:seed --force --no-interaction
 fi
 
 # 缓存 config / events / routes / views（需有效 APP_KEY；设为 false 可跳过，便于本地排障）

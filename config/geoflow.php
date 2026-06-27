@@ -15,7 +15,7 @@ $versionManifest = is_file($versionManifestPath)
     ? json_decode((string) file_get_contents($versionManifestPath), true)
     : [];
 $appVersion = is_array($versionManifest) ? trim((string) ($versionManifest['version'] ?? '')) : '';
-$appVersion = $appVersion !== '' ? $appVersion : '2.0.4';
+$appVersion = $appVersion !== '' ? $appVersion : '2.1.0';
 
 return [
 
@@ -37,12 +37,17 @@ return [
     'public_locale' => env('GEOFLOW_PUBLIC_LOCALE', 'zh_CN'),
     // 默认前台主题；后台未显式选择主题时使用
     'default_theme' => env('GEOFLOW_DEFAULT_THEME', 'toutiao-news-20260426'),
+    // 是否在默认 db:seed 中写入前台演示分类和文章。生产环境默认关闭，避免重启/初始化时污染真实内容。
+    'seed_frontend_demo' => filter_var(env('GEOFLOW_SEED_FRONTEND_DEMO', false), FILTER_VALIDATE_BOOLEAN),
+    // 演示数据默认只补缺，不覆盖用户已修改的网站设置、广告、分类和文章；仅调试演示库时才显式开启覆盖。
+    'seed_frontend_demo_overwrite' => filter_var(env('GEOFLOW_SEED_FRONTEND_DEMO_OVERWRITE', false), FILTER_VALIDATE_BOOLEAN),
 
     // 当前系统版本（底部展示、GitHub 更新检查对比）；默认跟随本地 version.json，避免已部署 .env 锁死版本号。
     'app_version' => $appVersion,
     // 首次部署登录页初始管理员提示；仅当默认管理员尚未登录且密码可验证时展示一次。
     'initial_admin_hint_enabled' => filter_var(env('GEOFLOW_INITIAL_ADMIN_HINT_ENABLED', true), FILTER_VALIDATE_BOOLEAN),
     'initial_admin_username' => trim((string) env('GEOFLOW_ADMIN_USERNAME', 'admin')) ?: 'admin',
+    'initial_admin_email' => trim((string) env('GEOFLOW_ADMIN_EMAIL', 'admin@example.com')) ?: 'admin@example.com',
     'initial_admin_password' => (string) env('GEOFLOW_ADMIN_PASSWORD', ''),
     // 欢迎弹窗「介绍」文案版本：变更后所有管理员会再次看到介绍弹窗
     'welcome_intro_version' => env('GEOFLOW_WELCOME_INTRO_VERSION', '2.1'),

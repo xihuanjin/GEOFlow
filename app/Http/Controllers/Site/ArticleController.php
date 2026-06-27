@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Article;
 use App\Support\Site\ArticleHtmlPresenter;
 use App\Support\Site\ArticleStickyAdPicker;
+use App\Support\Site\ArticleTextAdPicker;
 use App\Support\Site\SiteSettingsBag;
 use App\Support\Site\SiteThemeViewResolver;
 use Illuminate\View\View;
@@ -34,6 +35,7 @@ class ArticleController extends Controller
         $map = SiteSettingsBag::all();
         $siteTitle = (string) ($map['site_name'] ?? config('geoflow.site_name', config('app.name')));
         $siteDescription = (string) ($map['site_description'] ?? config('geoflow.site_description', ''));
+        $siteKeywords = (string) ($map['site_keywords'] ?? config('geoflow.site_keywords', ''));
 
         $rawContent = (string) $article->content;
         $body = ArticleHtmlPresenter::stripLeadingTitleHeading($rawContent, (string) $article->title);
@@ -42,7 +44,9 @@ class ArticleController extends Controller
             $excerpt = ArticleHtmlPresenter::stripLeadingTitleHeading($excerpt, (string) $article->title);
         }
 
-        $contentHtml = ArticleHtmlPresenter::markdownToHtml($body);
+        $contentHtml = ArticleTextAdPicker::injectIntoContentHtml(
+            ArticleHtmlPresenter::markdownToHtml($body)
+        );
 
         $tags = $this->keywordTags((string) $article->keywords);
 
@@ -54,8 +58,9 @@ class ArticleController extends Controller
             ->limit(6)
             ->get(['id', 'title', 'slug']);
 
-        $pageTitle = $article->title.' - '.$siteTitle;
+        $pageTitle = (string) $article->title;
         $pageDescription = $excerpt !== '' ? $excerpt : ArticleHtmlPresenter::cardSummary($article, 160);
+        $pageKeywords = implode(',', $tags);
 
         $stickyAd = ArticleStickyAdPicker::firstEnabled();
 
@@ -68,9 +73,11 @@ class ArticleController extends Controller
             'relatedArticles' => $related,
             'siteTitle' => $siteTitle,
             'siteDescription' => $siteDescription,
-            'siteKeywords' => '',
+            'siteKeywords' => $siteKeywords,
             'pageTitle' => $pageTitle,
             'pageDescription' => $pageDescription,
+            'pageKeywords' => $pageKeywords,
+            'pageOgType' => 'article',
             'stickyAd' => $stickyAd,
             'canonicalUrl' => route('site.article', $article->slug),
         ]);

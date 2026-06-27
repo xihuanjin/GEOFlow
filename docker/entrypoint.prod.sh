@@ -23,14 +23,35 @@ fi
 mkdir -p \
   bootstrap/cache \
   storage/app/public \
+  storage/app/public/uploads/images \
+  storage/app/tmp \
   storage/framework/cache/data \
   storage/framework/sessions \
   storage/framework/views \
   storage/logs
 
+if [ "${AUTO_FIX_STORAGE_PERMISSIONS:-true}" = "true" ]; then
+  if [ "$(id -u)" = "0" ]; then
+    RUNTIME_USER="${RUNTIME_USER:-www-data}"
+    RUNTIME_GROUP="${RUNTIME_GROUP:-www-data}"
+
+    echo "[entrypoint-prod] fixing storage permissions for ${RUNTIME_USER}:${RUNTIME_GROUP}"
+    chown -R "${RUNTIME_USER}:${RUNTIME_GROUP}" storage bootstrap/cache
+    find storage bootstrap/cache -type d -exec chmod 775 {} \;
+    find storage bootstrap/cache -type f -exec chmod 664 {} \;
+  else
+    echo "[entrypoint-prod] skip permission fix: container is not running as root"
+  fi
+fi
+
 if [ ! -e public/storage ]; then
   php artisan storage:link --force --no-interaction
 fi
+
+run_geoflow_install() {
+  echo "[entrypoint-prod] php artisan geoflow:install"
+  php artisan geoflow:install --no-interaction
+}
 
 if [ "${AUTO_WAIT_FOR_DB:-true}" = "true" ] && [ "${DB_CONNECTION:-}" = "pgsql" ]; then
   DB_HOST_VALUE="${DB_HOST:-postgres}"
@@ -49,9 +70,8 @@ if [ "${AUTO_MIGRATE:-false}" = "true" ]; then
   php artisan migrate --force --no-interaction
 fi
 
-if [ "${AUTO_SEED:-false}" = "true" ]; then
-  echo "[entrypoint-prod] php artisan db:seed --force"
-  php artisan db:seed --force --no-interaction
+if [ "${AUTO_INSTALL_ONCE:-false}" = "true" ]; then
+  run_geoflow_install
 fi
 
 if [ "${AUTO_OPTIMIZE:-true}" = "true" ]; then

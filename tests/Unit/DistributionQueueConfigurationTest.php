@@ -56,4 +56,19 @@ class DistributionQueueConfigurationTest extends TestCase
             }
         }
     }
+
+    public function test_production_init_uses_first_install_command_instead_of_auto_seed(): void
+    {
+        $root = dirname(__DIR__, 2);
+        $compose = file_get_contents($root.'/docker-compose.prod.yml');
+        $entrypoint = file_get_contents($root.'/docker/entrypoint.prod.sh');
+
+        $this->assertIsString($compose);
+        $this->assertIsString($entrypoint);
+        $this->assertStringContainsString('- ./.env.prod', $compose);
+        $this->assertStringNotContainsString('AUTO_SEED', $compose);
+        $this->assertStringNotContainsString('AUTO_SEED_CLASS:', $compose);
+        $this->assertStringNotContainsString('php artisan db:seed', $entrypoint);
+        $this->assertStringContainsString('php artisan geoflow:install', $entrypoint);
+    }
 }
