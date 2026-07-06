@@ -33,8 +33,19 @@ class AdminAnalyticsPageTest extends TestCase
 
         $response
             ->assertOk()
-            ->assertSee('数据分析')
-            ->assertSee('按日期、站点、内容和日志来源查看内容生产与访问趋势')
+            ->assertSee(__('admin.analytics.heading'))
+            ->assertSee(__('admin.analytics.subtitle'))
+            ->assertSee(__('admin.growth_center.workbench.title'))
+            ->assertSee(__('admin.growth_center.priority.no_form_title'))
+            ->assertSee(__('admin.growth_center.stage.visit_title'))
+            ->assertSee(__('admin.growth_center.stage.touch_title'))
+            ->assertSee(__('admin.growth_center.stage.lead_title'))
+            ->assertSee(__('admin.growth_center.stage.follow_title'))
+            ->assertSee(__('admin.growth_center.inbox.title'))
+            ->assertSee(__('admin.growth_center.source.title'))
+            ->assertSee(__('admin.growth_center.observation.title'))
+            ->assertSee(route('admin.lead-forms.create'), false)
+            ->assertSee(route('admin.leads.index'), false)
             ->assertSee(__('admin.analytics.filters.apply'))
             ->assertSee(__('admin.analytics.filters.source_pending', ['source' => __('admin.analytics.filters.server')]))
             ->assertSee(route('admin.analytics'), false)
@@ -62,7 +73,7 @@ class AdminAnalyticsPageTest extends TestCase
             ->assertSee(route('admin.knowledge-bases.index'), false)
             ->assertSee(route('admin.authors.index'), false)
             ->assertSee(route('admin.url-import.history'), false)
-            ->assertSee('日志分析')
+            ->assertSee(__('admin.analytics.logs_title'))
             ->assertSee('暂无日志数据');
 
         $html = $response->getContent();
@@ -83,6 +94,20 @@ class AdminAnalyticsPageTest extends TestCase
         $this->assertStringContainsString('text-blue-600 font-medium', $html);
     }
 
+    public function test_analytics_page_renders_before_lead_tables_are_migrated(): void
+    {
+        Schema::dropIfExists('lead_submissions');
+        Schema::dropIfExists('lead_forms');
+
+        $this->actingAs($this->admin(), 'admin')
+            ->get(route('admin.analytics'))
+            ->assertOk()
+            ->assertSee(__('admin.analytics.heading'))
+            ->assertSee(__('admin.growth_center.priority.no_form_title'))
+            ->assertSee(__('admin.growth_center.inbox.empty'))
+            ->assertSee(__('admin.growth_center.source.empty'));
+    }
+
     public function test_analytics_page_applies_date_filters_to_content_metrics(): void
     {
         Carbon::setTestNow(Carbon::parse('2026-05-21 12:00:00'));
@@ -98,7 +123,7 @@ class AdminAnalyticsPageTest extends TestCase
             ->assertOk()
             ->assertSee('2026-05-20')
             ->assertSee('2026-05-21')
-            ->assertSee(__('admin.analytics.global_overview.title'))
+            ->assertSee(__('admin.analytics.overall_title'))
             ->assertSee('data-analytics-global-overview', false)
             ->assertSee(__('admin.dashboard.total_articles'))
             ->assertSee('今日新增', false)

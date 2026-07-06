@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Models\LeadForm;
 use App\Models\SiteSetting;
 use App\Services\Admin\SiteThemeReplicationService;
 use App\Support\AdminBasePathManager;
@@ -13,8 +14,9 @@ use App\Support\Site\SiteSettingsBag;
 use App\Support\Site\SiteThemeCatalog;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
 
 /**
@@ -54,6 +56,7 @@ class SiteSettingsController extends Controller
             'homepageModuleTypes' => HomepageModuleBuilder::TYPES,
             'homepageModuleLayouts' => HomepageModuleBuilder::LAYOUTS,
             'homepageArticleSources' => HomepageModuleBuilder::ARTICLE_SOURCES,
+            'leadForms' => $this->activeLeadForms(),
             'homepageContainerWidths' => HomepageModuleBuilder::CONTAINER_WIDTHS,
             'homepageSpacings' => HomepageModuleBuilder::SPACINGS,
             'homepageRadii' => HomepageModuleBuilder::RADII,
@@ -63,6 +66,18 @@ class SiteSettingsController extends Controller
             'articleDetailAds' => $this->parseArticleDetailAds((string) ($settings['article_detail_ads'] ?? '[]')),
             'articleDetailTextAds' => $this->parseArticleDetailTextAds((string) ($settings['article_detail_text_ads'] ?? '[]')),
         ]);
+    }
+
+    private function activeLeadForms()
+    {
+        if (! Schema::hasTable('lead_forms')) {
+            return collect();
+        }
+
+        return LeadForm::query()
+            ->where('status', LeadForm::STATUS_ACTIVE)
+            ->orderBy('name')
+            ->get(['id', 'name', 'slug']);
     }
 
     /**
