@@ -6,6 +6,9 @@ use App\Http\Controllers\Controller;
 use App\Models\AiModel;
 use App\Models\Article;
 use App\Models\SiteSetting;
+use App\Services\GeoFlow\AiUsageQuotaService;
+use App\Services\GeoFlow\AiUsageReservation;
+use App\Services\GeoFlow\AiVisibility\AiProviderEndpointPolicy;
 use App\Services\Outbound\SafeOutboundHttpClient;
 use App\Support\AdminWeb;
 use App\Support\GeoFlow\ApiKeyCrypto;
@@ -37,6 +40,8 @@ class AiModelController extends Controller
         private readonly ApiKeyCrypto $apiKeyCrypto,
         private readonly SafeOutboundHttpClient $safeHttp,
         private readonly Factory $http,
+        private readonly AiUsageQuotaService $usageQuota,
+        private readonly AiProviderEndpointPolicy $endpointPolicy,
     ) {}
 
     /**
@@ -142,6 +147,18 @@ class AiModelController extends Controller
         }
 
         $apiKey = trim((string) ($payload['api_key'] ?? ''));
+        $currentApiUrl = trim((string) ($model->api_url ?? ''));
+        $nextApiUrl = (string) $updateData['api_url'];
+        if ($apiKey === ''
+            && $currentApiUrl !== $nextApiUrl
+            && ! $this->endpointPolicy->sameOrigin($currentApiUrl, $nextApiUrl)) {
+            return back()
+                ->withInput($request->except('api_key'))
+                ->withErrors([
+                    'api_key' => __('admin.ai_models.error.api_key_required_for_origin_change'),
+                ]);
+        }
+
         if ($apiKey !== '') {
             try {
                 $updateData['api_key'] = $this->encryptApiKey($apiKey);
@@ -186,12 +203,13 @@ class AiModelController extends Controller
     /**
      * 测试单个 AI 模型的 API 连通性。
      *
-     * 只发起最小化请求，不增加模型调用统计，也不返回敏感密钥。
+     * 只发起最小化请求，并纳入统一每日额度与调用统计，不返回敏感密钥。
      */
     public function testConnection(int $modelId): JsonResponse
     {
         $model = AiModel::query()->whereKey($modelId)->firstOrFail();
         $startedAt = microtime(true);
+        $reservation = null;
 
         try {
             $modelType = $this->normalizeModelType((string) ($model->model_type ?? 'chat'));
@@ -208,6 +226,17 @@ class AiModelController extends Controller
             }
             if ($modelName === '') {
                 return $this->modelTestResponse(false, __('admin.ai_models.test_error_model_missing'), $startedAt, $modelType, $endpoint);
+            }
+
+            $reservation = $this->usageQuota->reserveModel($model);
+            if ($reservation === null) {
+                return $this->modelTestResponse(
+                    false,
+                    __('admin.ai_models.test_error_daily_limit'),
+                    $startedAt,
+                    $modelType,
+                    $endpoint,
+                );
             }
 
             $request = $this->http->acceptJson()
@@ -228,6 +257,8 @@ class AiModelController extends Controller
 
             $json = $response->json();
             if (! $response->successful()) {
+                $this->usageQuota->releaseModel($reservation);
+
                 return $this->modelTestResponse(
                     false,
                     __('admin.ai_models.test_failed_with_status', [
@@ -242,6 +273,8 @@ class AiModelController extends Controller
             }
 
             if (! $this->isValidTestResponse($json, $modelType, $isGemini)) {
+                $this->usageQuota->releaseModel($reservation);
+
                 return $this->modelTestResponse(
                     false,
                     __('admin.ai_models.test_invalid_response', [
@@ -254,6 +287,12 @@ class AiModelController extends Controller
                 );
             }
 
+            try {
+                $this->usageQuota->recordModelSuccess($reservation);
+            } catch (Throwable $exception) {
+                report($exception);
+            }
+
             return $this->modelTestResponse(
                 true,
                 __('admin.ai_models.test_success', ['type' => $modelType === 'embedding' ? 'Embedding' : 'Chat']),
@@ -263,6 +302,10 @@ class AiModelController extends Controller
                 $response->status()
             );
         } catch (Throwable $exception) {
+            if ($reservation instanceof AiUsageReservation) {
+                $this->usageQuota->releaseModel($reservation);
+            }
+
             return $this->modelTestResponse(
                 false,
                 __('admin.ai_models.test_exception', ['message' => $this->redactedRemoteDetail()]),
@@ -362,6 +405,7 @@ class AiModelController extends Controller
             'failover_priority',
             'daily_limit',
             'used_today',
+            'usage_date',
             'total_used',
             'status',
             'created_at',
@@ -397,7 +441,7 @@ class AiModelController extends Controller
                 'api_url' => (string) ($model->api_url ?? ''),
                 'failover_priority' => (int) ($model->failover_priority ?? 100),
                 'daily_limit' => (int) ($model->daily_limit ?? 0),
-                'used_today' => (int) ($model->used_today ?? 0),
+                'used_today' => $model->currentUsage(),
                 'total_used' => (int) ($model->total_used ?? 0),
                 'status' => (string) ($model->status ?? 'active'),
                 'max_tokens' => $supportsMaxTokens && $model->max_tokens !== null ? (int) $model->max_tokens : null,

@@ -4,13 +4,13 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\Admin;
+use App\Services\GeoFlow\AnonymousUsageTelemetry;
 use App\Support\AdminActivityLogger;
 use App\Support\AdminWeb;
 use App\Support\GeoFlow\AdminLoginLockService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Hash;
 use Illuminate\View\View;
 use Throwable;
 
@@ -20,7 +20,8 @@ use Throwable;
 class AdminAuthController extends Controller
 {
     public function __construct(
-        private readonly AdminLoginLockService $adminLoginLockService
+        private readonly AdminLoginLockService $adminLoginLockService,
+        private readonly AnonymousUsageTelemetry $anonymousUsageTelemetry,
     ) {}
 
     public function showLoginForm(Request $request): View|RedirectResponse
@@ -42,6 +43,11 @@ class AdminAuthController extends Controller
             'password' => ['required', 'string'],
         ]);
         $username = trim((string) $credentials['username']);
+        $ipAddress = (string) $request->ip();
+        if ($this->adminLoginLockService->tooManyAttempts($username, $ipAddress)) {
+            return $this->temporaryLockoutResponse($username, $ipAddress);
+        }
+
         /** @var Admin|null $targetAdmin */
         $targetAdmin = Admin::query()->where('username', $username)->first();
         if ($targetAdmin instanceof Admin && $this->adminLoginLockService->isLocked($targetAdmin)) {
@@ -57,10 +63,8 @@ class AdminAuthController extends Controller
             ['username' => $username, 'password' => $credentials['password'], 'status' => 'active'],
             $remember
         )) {
-            if ($targetAdmin instanceof Admin && $this->adminLoginLockService->recordFailedAttemptAndLock($targetAdmin)) {
-                return back()->withErrors([
-                    'username' => __('admin.login.error.account_locked'),
-                ])->onlyInput('username');
+            if ($this->adminLoginLockService->recordFailedAttempt($username, $ipAddress)) {
+                return $this->temporaryLockoutResponse($username, $ipAddress);
             }
 
             return back()->withErrors([
@@ -71,14 +75,25 @@ class AdminAuthController extends Controller
         /** @var Admin $admin */
         $admin = Auth::guard('admin')->user();
         $request->session()->regenerate();
-        $this->adminLoginLockService->clearFailedAttempts((string) $admin->username);
+        $request->session()->put(Admin::AUTH_VERSION_SESSION_KEY, (int) $admin->auth_version);
+        $this->adminLoginLockService->clearFailedAttempts((string) $admin->username, $ipAddress);
 
         $admin->forceFill(['last_login' => now()])->save();
         AdminActivityLogger::logFromRequest($request, $admin, 'auth:login', [
             'username' => (string) $admin->username,
         ]);
+        defer(fn () => $this->anonymousUsageTelemetry->reportAdminLogin($admin, 'web'));
 
         return redirect()->intended(route('admin.dashboard'));
+    }
+
+    private function temporaryLockoutResponse(string $username, string $ipAddress): RedirectResponse
+    {
+        $seconds = max(1, $this->adminLoginLockService->availableIn($username, $ipAddress));
+
+        return back()->withErrors([
+            'username' => __('admin.login.error.too_many_attempts', ['seconds' => $seconds]),
+        ])->onlyInput('username');
     }
 
     public function logout(Request $request): RedirectResponse
@@ -111,9 +126,9 @@ class AdminAuthController extends Controller
 
     /**
      * 登录页只在首次部署、默认管理员尚未成功登录时给出一次性提示。
-     * 未显式配置密码时，Seeder 可能生成随机密码，只能提示查看初始化日志。
+     * 提示中永远不包含密码，只引导管理员查看受保护的初始化日志。
      *
-     * @return array{enabled: bool, mode?: string, username?: string, password?: string, storage_key?: string}
+     * @return array{enabled: bool, username?: string, storage_key?: string}
      */
     private function initialAdminHint(): array
     {
@@ -139,26 +154,10 @@ class AdminAuthController extends Controller
             return ['enabled' => false];
         }
 
-        $password = (string) config('geoflow.initial_admin_password', '');
         $storageKey = 'geoflow.initial-admin-hint.'.sha1($username.'|'.(string) config('geoflow.app_version'));
-
-        if ($password !== '') {
-            if (Hash::check($password, (string) $admin->password)) {
-                return [
-                    'enabled' => true,
-                    'mode' => 'known',
-                    'username' => $username,
-                    'password' => $password,
-                    'storage_key' => $storageKey,
-                ];
-            }
-
-            return ['enabled' => false];
-        }
 
         return [
             'enabled' => true,
-            'mode' => 'log',
             'username' => $username,
             'storage_key' => $storageKey,
         ];

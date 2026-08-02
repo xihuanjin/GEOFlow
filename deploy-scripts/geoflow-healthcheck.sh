@@ -70,27 +70,31 @@ main() {
   log "Checking container status."
   "${COMPOSE[@]}" ps
 
-  local required=(postgres redis app web queue scheduler reverb)
-  local service
+  local required=(postgres redis app web queue knowledge-queue system-update-queue scheduler reverb)
+  local service missing_services=()
   for service in "${required[@]}"; do
     if "${COMPOSE[@]}" ps --status running --services | grep -qx "$service"; then
       log "Service running: ${service}"
     else
       warn "Service is not running: ${service}"
+      missing_services+=("$service")
     fi
   done
+  if [ "${#missing_services[@]}" -gt 0 ]; then
+    fail "Required services are not running: ${missing_services[*]}"
+  fi
 
   check_http "$web_port"
 
   log "Checking Laravel database connection."
-  if "${COMPOSE[@]}" exec -T app php artisan migrate:status --no-interaction >/dev/null; then
-    log "Database connection and migration table are reachable."
+  if "${COMPOSE[@]}" exec -T app php artisan migrate:status --pending=1 --no-interaction >/dev/null; then
+    log "Database connection is reachable and no migrations are pending."
   else
-    warn "Laravel cannot read migration status. Check app logs and database settings."
+    fail "Laravel cannot read migration status or still has pending migrations. Run the gated migration step before releasing services."
   fi
 
   log "Recent application logs:"
-  "${COMPOSE[@]}" logs --tail=80 app queue scheduler web || true
+  "${COMPOSE[@]}" logs --tail=80 app queue knowledge-queue system-update-queue scheduler web || true
 }
 
 main "$@"

@@ -2,9 +2,39 @@
 
 This document tracks user-facing updates in the public repository. For future GitHub pushes, update this file together with the Chinese version in `CHANGELOG.md`.
 
-## 2026-07-17
+## 2026-07-29
 
-### v2.1.1 (release preparation)
+### v2.2.0
+
+- Added anonymous successful-login telemetry:
+  - Successful admin web and API logins emit `admin_login` events with the channel, current version, random installation ID, and an irreversible admin digest.
+  - Every successful event carries a unique UUID for deduplication, allowing the central collector to aggregate login counts and anonymous admin activity accurately.
+  - A fixed payload allowlist excludes usernames, email addresses, IP addresses, domains, page paths, failed-login details, content, and secrets.
+- Preserved login availability:
+  - Telemetry runs after the response, so collector timeouts or failures do not change web or API login outcomes.
+  - Failed logins, disabled telemetry, and missing collector endpoints send no central request.
+- Expanded automated coverage for anonymous payloads, web/API channels, silent failed logins, and telemetry network failures.
+
+## 2026-07-28
+
+### v2.1.2
+
+- Refreshed the frontend dependency security baseline:
+  - Updated compatible patch releases for Axios, Vite, esbuild, PostCSS, concurrently, shell-quote, Pusher JS, and related packages.
+  - Removed the legacy `engine.io-client` / `ws` dependency chain, restoring production and development npm audits to zero known vulnerabilities.
+- Corrected anonymous telemetry metric boundaries:
+  - Server-side install, update, and daily heartbeat events exclusively drive deployment totals, active deployments, and version distribution.
+  - Browser `admin_active` Pulse events now contribute only to admin DAU and no longer inflate deployment metrics.
+  - Cloudflare D1 deduplicates lifecycle versions, daily heartbeats, and daily admin digests so network retries do not multiply raw events.
+- Normalized the PHP formatting baseline so the full Pint check passes.
+
+### v2.1.1
+
+- Added lightweight anonymous deployment telemetry:
+  - First install sends `installed`, version changes send `updated`, and the scheduler sends at most one daily `heartbeat` for discovered-deployment, active-deployment, and version-distribution metrics.
+  - The browser `admin_active` Pulse remains in place and measures admin DAU by random instance ID plus an irreversible admin digest.
+  - Events use a Cloudflare Pages Functions HTTPS gateway backed by D1 by default; operators can replace the endpoint or disable telemetry completely.
+  - Server payloads contain only event type, random instance ID, and version. Network failures do not change install, update, or scheduler outcomes, and telemetry can be disabled with `GEOFLOW_TELEMETRY_ENABLED=false`.
 
 - Hardened frontend structured data:
   - Every theme now emits JSON-LD through Laravel `Js::encode`, blocking executable-context payloads such as `</script>` while preserving valid Schema data.

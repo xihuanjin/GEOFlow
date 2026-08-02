@@ -10,19 +10,25 @@ use App\Http\Controllers\Admin\AdminUserController;
 use App\Http\Controllers\Admin\AdminWelcomeController;
 use App\Http\Controllers\Admin\AiModelController;
 use App\Http\Controllers\Admin\AiPromptController;
+use App\Http\Controllers\Admin\AiSourceProviderController;
 use App\Http\Controllers\Admin\AiSpecialPromptController;
+use App\Http\Controllers\Admin\AiVisibilityAnalyticsController;
 use App\Http\Controllers\Admin\AnalyticsController;
 use App\Http\Controllers\Admin\ApiTokenController;
 use App\Http\Controllers\Admin\ArticleController;
 use App\Http\Controllers\Admin\ArticleEditorAssetController;
+use App\Http\Controllers\Admin\ArticleEditorAssistantController;
 use App\Http\Controllers\Admin\AuthorController;
 use App\Http\Controllers\Admin\CategoryController;
+use App\Http\Controllers\Admin\ContentAnalyticsController;
 use App\Http\Controllers\Admin\DashboardController;
+use App\Http\Controllers\Admin\DistributionAnalyticsController;
 use App\Http\Controllers\Admin\DistributionController;
 use App\Http\Controllers\Admin\EnterpriseKnowledgeController;
 use App\Http\Controllers\Admin\ImageLibraryController;
 use App\Http\Controllers\Admin\KeywordLibraryController;
 use App\Http\Controllers\Admin\KnowledgeBaseController;
+use App\Http\Controllers\Admin\LeadAnalyticsController;
 use App\Http\Controllers\Admin\LeadController;
 use App\Http\Controllers\Admin\LeadFormController;
 use App\Http\Controllers\Admin\LegacyController;
@@ -33,6 +39,7 @@ use App\Http\Controllers\Admin\SiteThemeReplicationController;
 use App\Http\Controllers\Admin\SystemUpdateController;
 use App\Http\Controllers\Admin\TaskController;
 use App\Http\Controllers\Admin\TitleLibraryController;
+use App\Http\Controllers\Admin\TrafficAnalyticsController;
 use App\Http\Controllers\Admin\UrlImportController;
 use App\Http\Controllers\Site\ArchiveController;
 use App\Http\Controllers\Site\ArticleController as SiteArticleController;
@@ -71,7 +78,9 @@ Route::prefix($adminPrefix)->name('admin.')->middleware(['admin.locale'])->group
     // 访客认证路由
     Route::middleware('guest:admin')->group(function () {
         Route::get('login', [AdminAuthController::class, 'showLoginForm'])->name('login');
-        Route::post('login', [AdminAuthController::class, 'login'])->name('login.attempt');
+        Route::post('login', [AdminAuthController::class, 'login'])
+            ->middleware('throttle:admin-login')
+            ->name('login.attempt');
     });
 
     // 后台受保护路由
@@ -81,6 +90,15 @@ Route::prefix($adminPrefix)->name('admin.')->middleware(['admin.locale'])->group
         Route::post('welcome/dismiss', [AdminWelcomeController::class, 'dismiss'])->name('welcome.dismiss');
         Route::get('dashboard', [DashboardController::class, 'index'])->name('dashboard');
         Route::get('analytics', [AnalyticsController::class, 'index'])->name('analytics');
+        Route::prefix('analytics')->name('analytics.')->group(function (): void {
+            Route::get('content', ContentAnalyticsController::class)->name('content');
+            Route::get('traffic', TrafficAnalyticsController::class)->name('traffic');
+            Route::get('ai-visibility', AiVisibilityAnalyticsController::class)->name('ai-visibility');
+            Route::get('leads', LeadAnalyticsController::class)->name('leads');
+            Route::get('distribution', DistributionAnalyticsController::class)
+                ->middleware('admin.super')
+                ->name('distribution');
+        });
 
         Route::prefix('system-updates')->name('system-updates.')->group(function () {
             Route::get('/', [SystemUpdateController::class, 'index'])->name('index');
@@ -143,6 +161,10 @@ Route::prefix($adminPrefix)->name('admin.')->middleware(['admin.locale'])->group
             Route::put('jobs/{distributionId}', [DistributionController::class, 'updateArticle'])->name('article.update')->whereNumber('distributionId');
             Route::post('jobs/{distributionId}/delete', [DistributionController::class, 'deleteArticle'])->name('article.delete')->whereNumber('distributionId');
             Route::post('jobs/{distributionId}/retry', [DistributionController::class, 'retry'])->name('retry')->whereNumber('distributionId');
+            Route::get('{channelId}/delete', [DistributionController::class, 'deletePreview'])->middleware('admin.super')->name('delete')->whereNumber('channelId');
+            Route::post('{channelId}/delete/prepare', [DistributionController::class, 'prepareDelete'])->middleware('admin.super')->name('delete.prepare')->whereNumber('channelId');
+            Route::post('{channelId}/delete/cancel', [DistributionController::class, 'cancelDelete'])->middleware('admin.super')->name('delete.cancel')->whereNumber('channelId');
+            Route::delete('{channelId}', [DistributionController::class, 'destroy'])->middleware(['admin.super', 'throttle:admin-sensitive'])->name('destroy')->whereNumber('channelId');
             Route::get('{channelId}/edit', [DistributionController::class, 'edit'])->name('edit')->whereNumber('channelId');
             Route::put('{channelId}', [DistributionController::class, 'update'])->name('update')->whereNumber('channelId');
             Route::post('{channelId}/pause', [DistributionController::class, 'pause'])->name('pause')->whereNumber('channelId');
@@ -167,6 +189,8 @@ Route::prefix($adminPrefix)->name('admin.')->middleware(['admin.locale'])->group
             Route::post('batch/force-delete', [ArticleController::class, 'batchForceDelete'])->name('batch.force-delete');
             Route::post('trash/empty', [ArticleController::class, 'emptyTrash'])->name('trash.empty');
             Route::post('editor/wechat-html', [ArticleEditorAssetController::class, 'exportWeChatHtml'])->name('editor.wechat-html');
+            Route::get('editor/titles', [ArticleEditorAssistantController::class, 'titles'])->name('editor.titles');
+            Route::post('editor/generate', [ArticleEditorAssistantController::class, 'generate'])->middleware('throttle:10,1')->name('editor.generate');
             Route::get('create', [ArticleController::class, 'create'])->name('create');
             Route::post('create', [ArticleController::class, 'store'])->name('store');
             Route::post('{articleId}/restore', [ArticleController::class, 'restore'])->name('restore')->whereNumber('articleId');
@@ -302,10 +326,27 @@ Route::prefix($adminPrefix)->name('admin.')->middleware(['admin.locale'])->group
                 Route::get('/', [AiModelController::class, 'index'])->name('index');
                 Route::post('create', [AiModelController::class, 'store'])->name('store');
                 Route::put('{modelId}', [AiModelController::class, 'update'])->name('update');
-                Route::post('{modelId}/test', [AiModelController::class, 'testConnection'])->name('test');
+                Route::post('{modelId}/test', [AiModelController::class, 'testConnection'])
+                    ->middleware('throttle:admin-sensitive')
+                    ->name('test');
                 Route::post('{modelId}/delete', [AiModelController::class, 'destroy'])->name('delete');
                 Route::post('default-embedding', [AiModelController::class, 'updateDefaultEmbedding'])->name('default-embedding');
                 Route::post('chunking-config', [AiModelController::class, 'updateChunkingConfig'])->name('chunking-config');
+            });
+            Route::prefix('ai-source-providers')->name('ai-source-providers.')->group(function () {
+                Route::get('/', [AiSourceProviderController::class, 'index'])->name('index');
+                Route::post('/', [AiSourceProviderController::class, 'store'])->name('store');
+                Route::put('{providerId}', [AiSourceProviderController::class, 'update'])->name('update')->whereNumber('providerId');
+                Route::post('{providerId}/test', [AiSourceProviderController::class, 'testProvider'])
+                    ->middleware('throttle:admin-sensitive')
+                    ->name('test')
+                    ->whereNumber('providerId');
+                Route::post('{providerId}/delete', [AiSourceProviderController::class, 'destroy'])->name('delete')->whereNumber('providerId');
+                Route::post('model-bindings', [AiSourceProviderController::class, 'updateModelBindings'])->name('model-bindings');
+                Route::post('model-bindings/upsert-api', [AiSourceProviderController::class, 'upsertModelApi'])->name('model-bindings.upsert-api');
+                Route::post('model-bindings/test', [AiSourceProviderController::class, 'testModelBinding'])
+                    ->middleware('throttle:admin-sensitive')
+                    ->name('model-bindings.test');
             });
             Route::get('ai-prompts', [AiPromptController::class, 'index'])->name('ai-prompts');
             Route::post('ai-prompts/create', [AiPromptController::class, 'store'])->name('ai-prompts.store');

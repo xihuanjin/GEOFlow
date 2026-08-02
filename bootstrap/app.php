@@ -35,6 +35,8 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->appendToGroup('web', AssignApiRequestId::class);
+
         $middleware->alias([
             // 生成/透传 X-Request-Id，并写入响应头
             'api.request_id' => AssignApiRequestId::class,
@@ -62,6 +64,8 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->redirectUsersTo(fn () => route('admin.dashboard'));
     })
     ->withExceptions(function (Exceptions $exceptions): void {
+        $exceptions->dontFlash(['api_key']);
+
         /**
          * 后台 firstOrFail 友好错误页：
          * Laravel 渲染流程里 ModelNotFoundException 可能会先包装为 NotFoundHttpException，

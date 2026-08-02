@@ -4,12 +4,15 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\AiModel;
+use App\Models\AiSourceProvider;
+use App\Models\AiVisibilityRun;
 use App\Models\Prompt;
 use App\Models\Task;
 use App\Support\AdminWeb;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\View\View;
 
 /**
@@ -193,15 +196,32 @@ class LegacyController extends Controller
     /**
      * 加载 AI 配置器概览统计。
      *
-     * @return array{model_count:int,prompt_count:int,total_usage:int,today_usage:int}
+     * @return array{model_count:int,prompt_count:int,total_usage:int,today_usage:int,search_provider_count:int,search_provider_today_usage:int,visibility_failed_runs:int}
      */
     private function loadAiConfiguratorStats(): array
     {
+        $hasSourceProviderTable = Schema::hasTable('ai_source_providers');
+        $hasSourceProviderUsageDate = $hasSourceProviderTable
+            && Schema::hasColumn('ai_source_providers', 'usage_date');
+
         return [
             'model_count' => AiModel::query()->where('status', 'active')->count(),
             'prompt_count' => Prompt::query()->count(),
             'total_usage' => (int) (AiModel::query()->sum('total_used') ?? 0),
-            'today_usage' => (int) (AiModel::query()->sum('used_today') ?? 0),
+            'today_usage' => (int) (AiModel::query()
+                ->forCurrentUsageDay()
+                ->sum('used_today') ?? 0),
+            'search_provider_count' => $hasSourceProviderTable
+                ? AiSourceProvider::query()->where('status', 'active')->count()
+                : 0,
+            'search_provider_today_usage' => $hasSourceProviderUsageDate
+                ? (int) (AiSourceProvider::query()
+                    ->whereDate('usage_date', now()->toDateString())
+                    ->sum('used_today') ?? 0)
+                : 0,
+            'visibility_failed_runs' => Schema::hasTable('ai_visibility_runs')
+                ? AiVisibilityRun::query()->where('status', AiVisibilityRun::STATUS_FAILED)->count()
+                : 0,
         ];
     }
 }

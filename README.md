@@ -14,6 +14,18 @@
 
 GEOFlow 以 [Apache License 2.0](LICENSE) 开源发布。你可以自由使用、复制、修改和分发本项目，包括商业使用；请保留版权声明和许可证文本，并遵守 Apache-2.0 的专利授权、商标与免责声明条款。
 
+### 匿名使用统计
+
+GEOFlow 支持可关闭的匿名使用统计，用于了解项目部署量、活跃部署、后台日活和版本分布。启用后，首次安装会发送 `installed`，版本变化会发送 `updated`，调度器每天最多发送一次 `heartbeat`；已登录后台页面保留每日一次 `admin_active` Pulse。
+
+服务端事件只包含随机实例 ID、GEOFlow 版本和事件类型；后台 Pulse 额外包含管理员不可逆摘要。域名、页面路径、管理员账号、邮箱、文章内容、Cookie、APP_KEY 和业务密钥不会进入上报载荷。请求失败不会影响安装、升级、调度任务或后台页面；如需关闭，设置：
+
+```dotenv
+GEOFLOW_TELEMETRY_ENABLED=false
+```
+
+默认采集地址为 `https://geoflow-telemetry-gateway.pages.dev/api/pulse`，部署方也可以通过 `GEOFLOW_TELEMETRY_ENDPOINT` 替换为自己的兼容 HTTPS 入口。
+
 ---
 
 ## ✨ 你可以用它做什么
@@ -218,7 +230,7 @@ cp .env.example .env
 # 3. 按需编辑 .env（数据库、Redis、APP_URL、ADMIN_BASE_PATH、REVERB_* 等）
 vi .env
 
-# 4. 构建并启动（含 postgres、redis、init、app、queue、scheduler、reverb）
+# 4. 构建并启动（含 postgres、redis、init、app、三类 queue、scheduler、reverb）
 docker compose build
 docker compose up -d
 ```
@@ -248,11 +260,12 @@ vi .env.prod
 docker compose --env-file .env.prod -f docker-compose.prod.yml build
 docker compose --env-file .env.prod -f docker-compose.prod.yml up -d postgres redis
 docker compose --env-file .env.prod -f docker-compose.prod.yml up -d init
-docker compose --env-file .env.prod -f docker-compose.prod.yml up -d app web queue scheduler reverb
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d app web queue knowledge-queue system-update-queue scheduler reverb
 ```
 
 - 前台 / 后台统一经 `web`（Nginx）访问
 - PHP 由 `app`（php-fpm）解析
+- `APP_URL` 使用 `http://` 时设置 `SESSION_SECURE_COOKIE=false`；启用 HTTPS 后设置为 `true`
 - **首次安装**：生产 `init` 服务会先执行迁移，再运行 `php artisan geoflow:install`。该流程仅用于全新空库；已有数据或迁移历史的实例必须执行 `docs/deployment/DEPLOYMENT.md` 3.1 节的停机排空升级协议。
 - 详细说明见 `docs/deployment/DEPLOYMENT.md`
 
@@ -281,10 +294,12 @@ php artisan storage:link
 php artisan serve --host=127.0.0.1 --port=8080
 ```
 
-另开终端启动常驻进程（与 Docker 中 `queue` / `scheduler` / `reverb` 对应）：
+另开终端启动常驻进程（每条 `queue:work` 需要独立终端或进程托管）：
 
 ```bash
-php artisan queue:work redis --queue=geoflow,distribution,default --sleep=1 --tries=1 --timeout=300
+php -d memory_limit=256M artisan queue:work redis --queue=geoflow,distribution,theme-replication,default --sleep=1 --tries=1 --timeout=660 --memory=128 --max-jobs=100 --max-time=3600
+php -d memory_limit=160M artisan queue:work redis --queue=knowledge --sleep=1 --tries=1 --timeout=210 --memory=128 --max-jobs=20 --max-time=1800
+php -d memory_limit=256M artisan queue:work redis --queue=system-updates --sleep=1 --tries=1 --timeout=930 --memory=256 --max-jobs=10 --max-time=3600
 php artisan schedule:work
 php artisan reverb:start
 ```
@@ -353,7 +368,9 @@ php artisan geoflow:admin-unlock admin
 | `redis` | Redis 7 |
 | `init` | 一次性初始化（`restart: "no"`） |
 | `app` | `php artisan serve`，映射 **`${APP_PORT:-18080}:8080`** |
-| `queue` | `queue:work redis` |
+| `queue` | 文章生成、分发、主题复刻与默认队列 |
+| `knowledge-queue` | 知识库解析与向量化队列，独立内存上限 |
+| `system-update-queue` | 系统更新与回滚队列，独立长超时 |
 | `scheduler` | `schedule:work` |
 | `reverb` | WebSocket，映射 **`${REVERB_EXPOSE_PORT:-18081}:8080`** |
 

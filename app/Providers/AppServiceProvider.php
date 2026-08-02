@@ -7,6 +7,7 @@ use App\Contracts\Outbound\OutboundTransport;
 use App\Models\Admin;
 use App\Services\Admin\AdminUpdateMetadataService;
 use App\Services\Admin\AdminWelcomeModalService;
+use App\Services\GeoFlow\AnonymousUsageTelemetry;
 use App\Services\GeoFlow\ArticleGeoFlowService;
 use App\Services\GeoFlow\HorizonMetricsAdapter;
 use App\Services\GeoFlow\JobQueueService;
@@ -20,7 +21,11 @@ use App\Services\Outbound\SystemHostResolver;
 use App\View\Composers\SiteLayoutComposer;
 use Closure;
 use GuzzleHttp\Utils;
+use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Client\Factory as HttpFactory;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Facades\View;
 use Illuminate\Support\ServiceProvider;
@@ -83,6 +88,25 @@ class AppServiceProvider extends ServiceProvider
         // 后续若需恢复代理功能，应将代理选项下沉到 SafeOutboundHttpClient 的发送链路
         // （改造 resolveTarget() 或 send() 把 proxy options 合并进 withOptions）。
 
+        RateLimiter::for('admin-login', function (Request $request): Limit {
+            return Limit::perMinute(30)->by('admin-login-ip:'.$request->ip());
+        });
+        RateLimiter::for('admin-sensitive', function (Request $request): array {
+            $adminId = (int) ($request->user('admin')?->getAuthIdentifier() ?? 0);
+
+            return [
+                Limit::perMinute(5)->by('admin-sensitive:admin:'.$adminId),
+                Limit::perMinute(5)->by('admin-sensitive:admin-ip:'.$adminId.'|'.$request->ip()),
+            ];
+        });
+
+        $adminGuard = Auth::guard('admin');
+        if (method_exists($adminGuard, 'setRememberDuration')) {
+            $adminGuard->setRememberDuration(
+                max(1, (int) config('geoflow.admin_remember_minutes', 43200))
+            );
+        }
+
         View::composer(['site.layout', 'theme.*.layout'], SiteLayoutComposer::class);
 
         View::composer('admin.layouts.app', function ($view): void {
@@ -94,6 +118,10 @@ class AppServiceProvider extends ServiceProvider
             $view->with(
                 'adminUpdateNotificationPayload',
                 $admin instanceof Admin ? app(AdminUpdateMetadataService::class)->buildNotificationPayload() : null
+            );
+            $view->with(
+                'anonymousUsageTelemetryPayload',
+                $admin instanceof Admin ? app(AnonymousUsageTelemetry::class)->payload($admin) : null
             );
         });
     }
