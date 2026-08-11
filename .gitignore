@@ -12,6 +12,7 @@
 .phpactor.json
 .phpunit.result.cache
 /.fleet
+.geoflow.json
 /.idea
 /.nova
 /.phpunit.cache

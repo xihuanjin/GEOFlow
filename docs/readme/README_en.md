@@ -36,6 +36,14 @@ GEOFlow is released under the [Apache License 2.0](../../LICENSE). You may use, 
 
 ---
 
+## GEOFlow CLI 0.2.0
+
+The repository includes `bin/geoflow` for API v1 catalog, task, job, material, and article operations. It supports secure profiles, login, JSON file or stdin input, deletion confirmation, and structured error hints on macOS, Linux, and WSL. Native Windows ACLs require manual verification.
+
+[Full CLI guide](../GEOFLOW_CLI_en.md) | [中文文档](../GEOFLOW_CLI.md)
+
+---
+
 ## 🖼 UI Preview
 
 <table>
@@ -219,7 +227,7 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml up -d app web que
 
 - Frontend and admin both enter through `web` (Nginx)
 - PHP is executed by `app` (php-fpm)
-- **First install:** the production `init` service runs migrations and then `php artisan geoflow:install`. This sequence is limited to a fresh empty database. Deployments with data or migration history must follow the stopped-and-drained upgrade protocol in section 3.1 of `../../docs/deployment/DEPLOYMENT.md`.
+- **First install:** the production `init` service runs migrations and then `php artisan geoflow:install`. A pristine database receives theme 21 and the 50-article reference pack. Deployments with data or migration history keep their existing theme and content and must follow the stopped-and-drained upgrade protocol in section 3.1 of `../../docs/deployment/DEPLOYMENT.md`.
 - See `../../docs/deployment/DEPLOYMENT.md` for details
 
 ### Option 2: Local PHP stack
@@ -237,6 +245,7 @@ php artisan key:generate
 
 GEOFLOW_SECURITY_FRESH_INSTALL_CONFIRMED=true php artisan migrate --force
 php artisan geoflow:install                                            # first install on an empty database
+# Skip the theme and reference articles while keeping first-install settings: php artisan geoflow:install --without-demo
 php artisan storage:link
 
 php artisan serve --host=127.0.0.1 --port=8080
@@ -280,7 +289,7 @@ chmod -R ug+rwx storage bootstrap/cache
 | Username | `GEOFLOW_ADMIN_USERNAME`, default `admin` |
 | Password | Local/dev default `password`; in production set `GEOFLOW_ADMIN_PASSWORD`. If it is empty and the account does not exist yet, the installer generates a one-time random password in the init / `geoflow:install` logs. |
 
-`geoflow:install` only runs install seeders on a fresh empty database. If it detects existing user/business data but no installation marker, it writes the marker and skips seeding. `AdminUserSeeder` itself remains idempotent and never overwrites an existing username, email, or password.
+On a fresh empty database, `geoflow:install` adds the default Enterprise Signature theme, the 50-article reference pack, and example Baidu Analytics code. `--without-demo` skips the theme and reference articles while retaining the administrator and example analytics code. The example immediately loads a script from `hm.baidu.com` and sends public-site visit data to the example Baidu Analytics account; before production launch, replace it under Site Settings → Analytics Code with your own code, or clear it to disable analytics. When existing user or business data is detected, the command records the installation marker and preserves the current theme, settings, categories, authors, articles, and analytics code. `AdminUserSeeder` remains idempotent and never overwrites an existing username, email, or password.
 
 ### Admin login lockout and manual unlock
 
