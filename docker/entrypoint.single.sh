@@ -78,16 +78,44 @@ fi
 # 注意：迁移失败必须让容器退出，否则 PHP-FPM/Supervisor 会启动，
 # 但代码和数据库 schema 不一致 → 每次请求 500（典型症状：登录页能打开，
 # 一登录就 500 / 401 循环）。之前这里 `|| echo` 吞掉错误就是登录失效的根因。
+#
+# 单次容器升级流程（.env 里设一次，本脚本跑完自动清除）：
+#   1. docker compose down -v=false          # 先关旧容器（= 已 drain 所有 web/worker/queue/reverb）
+#   2. 在 .env 加一行：
+#         GEOFLOW_SECURITY_UPGRADE_DRAIN_CONFIRMED=true
+#   3. 重新 build 并 up -d：脚本会用该 flag 跑一次 migrate，成功后自动从 .env 删除该行
+# 全新部署（数据库完全为空）用 GEOFLOW_SECURITY_FRESH_INSTALL_CONFIRMED=true 代替。
+DRAIN_FLAG_SET=false
+if grep -qE '^GEOFLOW_SECURITY_UPGRADE_DRAIN_CONFIRMED=true$' .env 2>/dev/null; then
+  # 上游 v2.1.2 起 migration 2026_07_17_000400 引入了 SecurityUpgradeMigrationGate，
+  # 跑安全升级批次前必须先在 .env 里加 GEOFLOW_SECURITY_UPGRADE_DRAIN_CONFIRMED=true。
+  # .env 已在上方被 set -a 导入，SecurityUpgradeMigrationGate::assertReady() 会通过
+  # getenv() 读到该变量。迁移成功后下方会自动从 .env 删除这一行，避免以后误触发。
+  DRAIN_FLAG_SET=true
+  echo "[entrypoint] drain confirm flag detected in .env — will auto-remove after migration succeeds"
+fi
+
 if [ "${AUTO_MIGRATE:-true}" = "true" ]; then
   echo "[entrypoint] php artisan migrate --force --no-interaction"
-  if ! php artisan migrate --force --no-interaction; then
+  php artisan migrate --force --no-interaction
+  MIGRATE_RC=$?
+  if [ "$MIGRATE_RC" -ne 0 ]; then
     echo "[entrypoint] FATAL: migrate failed. Container exiting —"
     echo "[entrypoint]   Common causes:"
+    echo "[entrypoint]     - Security upgrade gate (migration 2026_07_17_000400):"
+    echo "[entrypoint]         在 .env 里加 GEOFLOW_SECURITY_UPGRADE_DRAIN_CONFIRMED=true 然后重跑"
+    echo "[entrypoint]         （先 docker compose down 已 drain 旧进程即可）"
     echo "[entrypoint]     - PostgreSQL user lacks ALTER/DROP permissions on a table"
     echo "[entrypoint]     - doctrine/dbal missing (needed by some ->change() migrations)"
     echo "[entrypoint]     - Extension missing (pgvector, uuid-ossp, etc.)"
     echo "[entrypoint]   Check docker logs for the exact SQLSTATE/exception above."
     exit 1
+  fi
+
+  # 迁移成功后自动从 .env 移除一次性确认标记（避免以后误触发）
+  if [ "$DRAIN_FLAG_SET" = "true" ]; then
+    echo "[entrypoint] removing one-time GEOFLOW_SECURITY_UPGRADE_DRAIN_CONFIRMED from .env"
+    sed -i.bak '/^GEOFLOW_SECURITY_UPGRADE_DRAIN_CONFIRMED=true$/d' .env && rm -f .env.bak
   fi
 fi
 
