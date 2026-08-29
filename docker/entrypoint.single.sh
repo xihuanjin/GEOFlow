@@ -75,9 +75,20 @@ fi
 # ------------------------------------------------------------------
 # 数据库迁移（每次启动执行，与旧 init 容器行为一致）
 # ------------------------------------------------------------------
+# 注意：迁移失败必须让容器退出，否则 PHP-FPM/Supervisor 会启动，
+# 但代码和数据库 schema 不一致 → 每次请求 500（典型症状：登录页能打开，
+# 一登录就 500 / 401 循环）。之前这里 `|| echo` 吞掉错误就是登录失效的根因。
 if [ "${AUTO_MIGRATE:-true}" = "true" ]; then
-  echo "[entrypoint] php artisan migrate --force"
-  php artisan migrate --force --no-interaction || echo "[entrypoint] warning: migrate failed, check PostgreSQL extensions"
+  echo "[entrypoint] php artisan migrate --force --no-interaction"
+  if ! php artisan migrate --force --no-interaction; then
+    echo "[entrypoint] FATAL: migrate failed. Container exiting —"
+    echo "[entrypoint]   Common causes:"
+    echo "[entrypoint]     - PostgreSQL user lacks ALTER/DROP permissions on a table"
+    echo "[entrypoint]     - doctrine/dbal missing (needed by some ->change() migrations)"
+    echo "[entrypoint]     - Extension missing (pgvector, uuid-ossp, etc.)"
+    echo "[entrypoint]   Check docker logs for the exact SQLSTATE/exception above."
+    exit 1
+  fi
 fi
 
 # ------------------------------------------------------------------
