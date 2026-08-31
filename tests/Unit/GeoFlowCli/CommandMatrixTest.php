@@ -105,11 +105,11 @@ class CommandMatrixTest extends TestCase
     }
 
     #[Test]
-    public function public_contract_keeps_31_operations_on_30_routes(): void
+    public function public_contract_keeps_37_operations_on_35_routes(): void
     {
-        $this->assertCount(31, self::contracts());
-        $this->assertCount(31, OperationRegistry::all());
-        $this->assertCount(30, OperationRegistry::routeSignatures());
+        $this->assertCount(37, self::contracts());
+        $this->assertCount(37, OperationRegistry::all());
+        $this->assertCount(35, OperationRegistry::routeSignatures());
     }
 
     /** @return iterable<string,array{array<string,mixed>}> */
@@ -280,6 +280,11 @@ class CommandMatrixTest extends TestCase
                 idempotencyKey: 'article-publish-10',
                 body: [],
             ),
+            'article.ai-quality-status' => self::contract(
+                ['article', 'ai-quality-status', '10'],
+                'GET',
+                'articles/10/ai-quality/status',
+            ),
             'article.ai-quality-recheck' => self::contract(
                 ['article', 'ai-quality-recheck', '10'],
                 'POST',
@@ -293,6 +298,37 @@ class CommandMatrixTest extends TestCase
                 'articles/10/ai-quality/override',
                 idempotencyKey: 'article-ai-quality-override-10',
                 body: ['reason' => 'verified evidence'],
+            ),
+            'article.ai-optimize' => self::contract(
+                ['article', 'ai-optimize', '10', '--level', 'excellent_80', '--model-id', '4'],
+                'POST',
+                'articles/10/ai-quality/optimization',
+                idempotencyKey: 'article-ai-optimize-10',
+                body: ['strategy' => 'excellent_80', 'optimization_model_id' => 4],
+            ),
+            'article.ai-optimization-status' => self::contract(
+                ['article', 'ai-optimization-status', '10'],
+                'GET',
+                'articles/10/ai-quality/status',
+            ),
+            'article.ai-optimization-candidate' => self::contract(
+                ['article', 'ai-optimization-candidate', '10'],
+                'GET',
+                'articles/10/ai-quality/optimization/candidate',
+            ),
+            'article.ai-optimization-apply' => self::contract(
+                ['article', 'ai-optimization-apply', '10', '--run-id', '12', '--candidate-hash', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+                'POST',
+                'articles/10/ai-quality/optimization/12/apply',
+                idempotencyKey: 'article-ai-optimization-apply-10',
+                body: ['candidate_hash' => 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+            ),
+            'article.ai-optimization-cancel' => self::contract(
+                ['article', 'ai-optimization-cancel', '10', '--run-id', '12'],
+                'POST',
+                'articles/10/ai-quality/optimization/12/cancel',
+                idempotencyKey: 'article-ai-optimization-cancel-10',
+                body: [],
             ),
             'article.trash' => self::contract(
                 ['article', 'trash', '10'],

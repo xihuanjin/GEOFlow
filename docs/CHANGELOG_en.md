@@ -2,6 +2,49 @@
 
 This document tracks user-facing updates in the public repository. For future GitHub pushes, update this file together with the Chinese version in `CHANGELOG.md`.
 
+## 2026-08-31
+
+### Three-layer AI quality retrieval and governed atomic facts
+
+- Added atomic-first, chunk, and broad-knowledge retrieval modes. Task settings and standalone article editing now share readiness checks, default priority, inheritance, and override rules, with atomic-first selected when every source is ready.
+- Added readiness projections, serving generations, per-check source ledgers, and immutable execution snapshots. Checks retain requested and effective modes, strategy versions, source hashes, and audit data, while knowledge, model, prompt, article, and rollout changes selectively expire affected results and schedule reconciliation.
+- Completed governed atomic-fact generation, review, version publishing, stable keys, evidence relinking, typed comparison, and active-revision serving. Deterministic facts use the atomic path, while unsupported or ambiguous claims continue through chunk retrieval.
+- Hardened high-risk knowledge review, broad-evidence budgets, prompt-injection quarantine, cross-token API idempotency, concurrent policy-version checks, distribution guard snapshots, and deletion protection for referenced knowledge bases.
+- Expanded knowledge-base navigation, the atomic-fact workbench, AI model diagnostics, and six-language admin copy, with a legacy backfill command, Docker queue configuration, Laravel and JavaScript regressions, and benchmark reports.
+
+## 2026-08-30
+
+### License and contribution governance
+
+- New GEOFlow versions and repository revisions from this change onward use the GNU Affero General Public License v3.0 only. Versions previously released under Apache-2.0 retain their original license.
+- Separate commercial terms are available from the copyright holder for proprietary modifications, white-label or OEM distribution, proprietary product integration, and other uses that cannot comply with AGPL-3.0.
+- Added a Contributor License Agreement, contribution guide, and pull request declaration. Contributors retain copyright while granting the project the sublicensing rights needed to use accepted contributions in both AGPL and commercial or proprietary versions.
+
+### Product and experience updates
+
+- Added an end-to-end article AI quality optimization workflow. Administrators can target pass, 80-point excellent, or 90-point excellent results, then review iterative candidate edits, rescored outcomes, change history, apply, cancel, rollback, and reconciliation states.
+- Improved AI quality reliability and explainability across long-form inspection, evidence positioning, result validation, scoring, invalidation, dedicated queues, health checks, quota control, versioned prompts, and task-level optimization policy.
+- Unified confirmation dialogs for sensitive admin actions across articles, tasks, models, material libraries, and knowledge bases, with clear targets, impact summaries, input validation, pending states, and recovery guidance.
+- Refined Admin UI V3 with collapsible quality results, clearer page identity, and a shared footer on every admin page for the version, changelog, license, copyright, author X profile, GitHub repository, and help links, including short-page and mobile layouts.
+- Extended API v1 and the GEOFlow CLI with article AI optimization operations, and added Docker timeout, retry, health check, queue, and worker configuration for quality inspection and optimization workloads.
+
+## 2026-08-29
+
+### Main branch updates
+
+- Hardened article trash and data integrity:
+  - Permanent article deletion now retains view logs and safely nulls `view_logs.article_id`, with PostgreSQL online constraint replacement plus SQLite and other supported database paths.
+  - Batch permanent deletion now enforces a 500-article limit, sensitive-operation throttling, transactions, and row locks. Failures hide database details and roll back the entire batch.
+  - Author lists and the materials API now count trashed articles consistently and keep referenced authors protected.
+- Improved the System Update Center:
+  - New-version notices show the version, release type, release date, summary, and official GitHub Release destination.
+  - Release links stay within the official GEOFlow repository and are generated from validated tags, preventing remote metadata from redirecting administrators elsewhere.
+  - Manual knowledge sync steps now explain their purpose, current status, and copyable command. Super administrators can open the Update Center directly from the top-bar update icon.
+- Refined Admin UI V3 page identity:
+  - The top bar now carries concise page titles and semantic icons, while Analytics and the operations dashboard remove repeated headings and secondary actions.
+  - Analytics metrics now share consistent height, numeric alignment, and density. AI help carousel controls use tighter spacing.
+  - The welcome page now presents the GEOFlow 3.0 positioning, core capabilities, use cases, and four-step onboarding path.
+
 ## 2026-08-28
 
 ### v3.0.0
@@ -41,6 +84,8 @@ This document tracks user-facing updates in the public repository. For future Gi
   - Article lists and detail pages expose status, score, conclusion, severity colors, source positioning, evidence, legal references, suggestions, history, recheck, and audited manual approval.
   - Changes to article content, task policy, prompts, models, knowledge chunks, or the legal rule version expire prior results and schedule reconciliation.
   - Long articles continue through one queued segment at a time. Structured requests and JSON fallback share one per-model time budget, while reconciliation isolates per-article configuration failures and dispatches cursor-based continuation batches.
+  - Inspections now have a 180-second end-to-end deadline, dedicated online and backfill queues, timeout sampling fallback, typed provider failures, and worker health checks. Failed runs remain unscored and provide actionable retry guidance.
+  - Added a guarded `fast_v2` compact execution path, stable evidence keys, shadow evaluation for scoring v2, offline and live golden-set commands, and staged release gates with incident freezes and verified recovery reports.
 - Unified Admin UI V3:
   - Core admin pages now share the new sidebar, top bar, navigation, forms, dialogs, and responsive layout, with recent activity, adjustable sidebar width, keyboard support, mobile layouts, and accessible states.
   - Icons, fonts, and page resources load locally. First paint and page navigation checks reduce flicker, layout shifts, and external resource dependencies.

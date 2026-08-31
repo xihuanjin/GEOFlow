@@ -15,13 +15,17 @@ use App\Models\Prompt;
 use App\Models\Task;
 use App\Models\TaskRun;
 use App\Models\TitleLibrary;
+use App\Models\WorkerHeartbeat;
 use App\Services\GeoFlow\DistributionOrchestrator;
 use App\Services\GeoFlow\JobQueueService;
 use App\Support\AdminWeb;
 use App\Support\GeoFlow\ApiKeyCrypto;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
 /**
@@ -57,6 +61,314 @@ class AdminTasksPageTest extends TestCase
             ->assertViewHas('taskI18n');
     }
 
+    public function test_task_pages_share_the_section_navigation_and_keep_index_actions(): void
+    {
+        $this->ensureWorkerHeartbeatTable();
+        $admin = $this->createTaskFormAdmin('tasks_section_navigation_admin');
+
+        foreach ([
+            'admin.tasks.index' => 'task-list',
+            'admin.tasks.workers' => 'workers',
+            'admin.tasks.jobs' => 'jobs',
+        ] as $routeName => $activeKey) {
+            $response = $this->actingAs($admin, 'admin')
+                ->get(route($routeName));
+
+            $response
+                ->assertOk()
+                ->assertSee('data-tasks-navigation', false)
+                ->assertSee(AdminWeb::routePath('admin.tasks.index'), false)
+                ->assertSee(AdminWeb::routePath('admin.tasks.workers'), false)
+                ->assertSee(AdminWeb::routePath('admin.tasks.jobs'), false);
+
+            $document = new \DOMDocument;
+            $document->loadHTML((string) $response->getContent(), LIBXML_NOERROR | LIBXML_NOWARNING | LIBXML_NONET);
+            $xpath = new \DOMXPath($document);
+            $navigation = $xpath->query('//*[@data-tasks-navigation]')?->item(0);
+            $activeItems = $xpath->query('.//*[@aria-current="page"]', $navigation);
+
+            self::assertNotNull($navigation, $routeName);
+            self::assertSame(3, $xpath->query('.//*[@data-tasks-navigation-item]', $navigation)?->length, $routeName);
+            self::assertSame(3, $xpath->query('.//*[@data-tasks-navigation-dot]', $navigation)?->length, $routeName);
+            self::assertSame(1, $activeItems?->length, $routeName);
+            self::assertSame(
+                $activeKey,
+                $activeItems?->item(0)?->attributes?->getNamedItem('data-tasks-navigation-item')?->nodeValue,
+                $routeName,
+            );
+
+            if ($routeName === 'admin.tasks.index') {
+                $response
+                    ->assertSee('href="'.route('admin.tasks.create').'"', false)
+                    ->assertSee('data-run-all-tasks', false);
+            }
+        }
+
+        foreach (['zh_CN', 'en', 'ja', 'es', 'ru', 'pt_BR'] as $locale) {
+            App::setLocale($locale);
+
+            foreach (['admin.tasks.page_title', 'admin.tasks.worker.title', 'admin.tasks.jobs.recent'] as $key) {
+                self::assertNotSame($key, __($key), $locale.': '.$key);
+            }
+        }
+    }
+
+    public function test_task_page_combines_queue_metrics_and_limits_monitoring_previews_to_ten_rows(): void
+    {
+        $this->ensureWorkerHeartbeatTable();
+        $admin = $this->createTaskFormAdmin('tasks_monitoring_overview_admin');
+        $task = Task::query()->create([
+            'name' => 'Monitoring Overview Task',
+            'status' => 'active',
+            'schedule_enabled' => 1,
+        ]);
+
+        for ($index = 0; $index < 12; $index++) {
+            TaskRun::query()->create([
+                'task_id' => $task->id,
+                'status' => 'completed',
+                'created_at' => now()->subSeconds($index),
+                'finished_at' => now()->subSeconds($index),
+            ]);
+            WorkerHeartbeat::query()->create([
+                'worker_id' => 'monitor-worker-'.$index,
+                'status' => 'idle',
+                'last_seen_at' => now()->subSeconds($index),
+                'meta' => [],
+            ]);
+        }
+
+        $response = $this->actingAs($admin, 'admin')
+            ->get(route('admin.tasks.index'))
+            ->assertOk()
+            ->assertSee(__('admin.tasks.monitoring.overview_title'))
+            ->assertSee(route('admin.tasks.workers'), false)
+            ->assertSee(route('admin.tasks.jobs'), false)
+            ->assertSee('id="queue-pending"', false)
+            ->assertSee('id="stats-total-tasks"', false)
+            ->assertSeeInOrder([
+                'id="task-overview-heading"',
+                'data-task-list',
+            ], false);
+
+        $html = (string) $response->getContent();
+        $document = new \DOMDocument;
+        $document->loadHTML($html, LIBXML_NOERROR | LIBXML_NOWARNING | LIBXML_NONET);
+        $xpath = new \DOMXPath($document);
+        $metricCells = $xpath->query('//section[@aria-labelledby="task-overview-heading"]/dl/div');
+
+        $this->assertSame(8, $metricCells->length);
+        foreach ($metricCells as $metricCell) {
+            $classTokens = preg_split('/\s+/', trim($metricCell->getAttribute('class'))) ?: [];
+            foreach (['flex', 'flex-col', 'items-center', 'justify-center', 'text-center'] as $expectedClass) {
+                $this->assertContains($expectedClass, $classTokens);
+            }
+        }
+
+        $this->assertCount(10, $response->viewData('workers'));
+        $this->assertCount(10, $response->viewData('recentJobs'));
+        $this->assertSame(1, substr_count($html, 'id="queue-pending"'));
+    }
+
+    public function test_worker_and_job_detail_pages_paginate_ten_records_per_page(): void
+    {
+        $this->ensureWorkerHeartbeatTable();
+        $admin = $this->createTaskFormAdmin('tasks_monitoring_pagination_admin');
+        $task = Task::query()->create([
+            'name' => 'Monitoring Pagination Task',
+            'status' => 'active',
+            'schedule_enabled' => 1,
+        ]);
+
+        $oldestRun = null;
+        for ($index = 0; $index < 12; $index++) {
+            $run = TaskRun::query()->create([
+                'task_id' => $task->id,
+                'status' => 'completed',
+                'created_at' => now()->subSeconds($index),
+                'finished_at' => now()->subSeconds($index),
+            ]);
+            WorkerHeartbeat::query()->create([
+                'worker_id' => 'paged-worker-'.$index,
+                'status' => 'idle',
+                'last_seen_at' => now()->subSeconds($index),
+                'meta' => [],
+            ]);
+            if ($index === 11) {
+                $oldestRun = $run;
+            }
+        }
+
+        $jobsFirstPage = $this->actingAs($admin, 'admin')
+            ->get(route('admin.tasks.jobs'))
+            ->assertOk()
+            ->assertViewHas('jobs', static fn ($jobs): bool => $jobs->perPage() === 10 && $jobs->total() === 12);
+        $this->assertSame(10, substr_count((string) $jobsFirstPage->getContent(), 'data-job-row'));
+
+        $jobsSecondPage = $this->actingAs($admin, 'admin')
+            ->get(route('admin.tasks.jobs', ['page' => 2]))
+            ->assertOk();
+        $this->assertSame(2, substr_count((string) $jobsSecondPage->getContent(), 'data-job-row'));
+
+        $workersFirstPage = $this->actingAs($admin, 'admin')
+            ->get(route('admin.tasks.workers'))
+            ->assertOk()
+            ->assertViewHas('workers', static fn ($workers): bool => $workers->perPage() === 10 && $workers->total() === 12);
+        $this->assertSame(10, substr_count((string) $workersFirstPage->getContent(), 'data-worker-row'));
+
+        $workersSecondPage = $this->actingAs($admin, 'admin')
+            ->get(route('admin.tasks.workers', ['page' => 2]))
+            ->assertOk();
+        $this->assertSame(2, substr_count((string) $workersSecondPage->getContent(), 'data-worker-row'));
+
+        $focusedJob = $this->actingAs($admin, 'admin')
+            ->get(route('admin.tasks.jobs', ['run_id' => $oldestRun->id]))
+            ->assertOk()
+            ->assertSee(__('admin.tasks.jobs.focused_run', ['id' => $oldestRun->id]))
+            ->assertSee('id="job-'.$oldestRun->id.'"', false);
+        $this->assertSame(1, substr_count((string) $focusedJob->getContent(), 'data-job-row'));
+    }
+
+    public function test_monitoring_rows_explain_the_task_record_and_failure_in_plain_language(): void
+    {
+        $this->ensureWorkerHeartbeatTable();
+        $admin = $this->createTaskFormAdmin('tasks_monitoring_plain_language_admin');
+        $task = Task::query()->create([
+            'name' => 'Plain Language Task',
+            'status' => 'active',
+            'schedule_enabled' => 1,
+        ]);
+        $category = Category::query()->create([
+            'name' => 'Monitoring Category',
+            'slug' => 'monitoring-category',
+        ]);
+        $author = Author::query()->create(['name' => 'Monitoring Author']);
+        $article = Article::query()->create([
+            'title' => 'Problem Article',
+            'slug' => 'problem-article',
+            'content' => 'Article body.',
+            'category_id' => $category->id,
+            'author_id' => $author->id,
+            'task_id' => $task->id,
+            'status' => 'draft',
+            'review_status' => 'pending',
+        ]);
+        $run = TaskRun::query()->create([
+            'task_id' => $task->id,
+            'article_id' => $article->id,
+            'status' => 'failed',
+            'error_message' => '正文过短 internal-token-value',
+            'created_at' => now(),
+            'finished_at' => now(),
+        ]);
+        WorkerHeartbeat::query()->create([
+            'worker_id' => 'plain-language-worker',
+            'status' => 'running',
+            'last_seen_at' => now(),
+            'meta' => ['task_run_id' => $run->id],
+        ]);
+        $runWithoutArticle = TaskRun::query()->create([
+            'task_id' => $task->id,
+            'status' => 'running',
+            'created_at' => now()->subSecond(),
+        ]);
+        WorkerHeartbeat::query()->create([
+            'worker_id' => 'plain-language-worker-without-article',
+            'status' => 'running',
+            'last_seen_at' => now()->subSecond(),
+            'meta' => ['task_run_id' => $runWithoutArticle->id],
+        ]);
+
+        $this->actingAs($admin, 'admin')
+            ->get(route('admin.tasks.jobs'))
+            ->assertOk()
+            ->assertSee(__('admin.tasks.jobs.summary.failed', ['task' => $task->name]))
+            ->assertSee(__('admin.tasks.jobs.failed_article', [
+                'article' => $article->title,
+                'reason' => __('admin.tasks.failure.content_too_short_detail'),
+            ]))
+            ->assertDontSee('internal-token-value')
+            ->assertSee(route('admin.articles.edit', ['articleId' => $article->id]), false)
+            ->assertSee(route('admin.articles.index', ['task_id' => $task->id]), false);
+
+        $healthResponse = $this->actingAs($admin, 'admin')
+            ->get(route('admin.tasks.health'))
+            ->assertOk()
+            ->assertJsonPath('success', true);
+        $failedRunPayload = collect($healthResponse->json('recent_runs'))
+            ->firstWhere('id', $run->id);
+        $this->assertSame('failed', $failedRunPayload['status']);
+        $this->assertArrayNotHasKey('error_message', $failedRunPayload);
+        $this->assertStringNotContainsString(
+            'internal-token-value',
+            (string) $healthResponse->json('recent_runs_html')
+        );
+
+        $this->actingAs($admin, 'admin')
+            ->get(route('admin.tasks.workers'))
+            ->assertOk()
+            ->assertSee(__('admin.tasks.worker.summary_busy', ['task' => $task->name]))
+            ->assertSee('Job #'.$run->id)
+            ->assertSee(route('admin.tasks.jobs', ['run_id' => $runWithoutArticle->id]).'#job-'.$runWithoutArticle->id, false);
+    }
+
+    public function test_monitoring_pages_handle_deleted_relations_unknown_statuses_and_long_worker_ids(): void
+    {
+        $this->ensureWorkerHeartbeatTable();
+        $admin = $this->createTaskFormAdmin('tasks_monitoring_edge_cases_admin');
+        $task = Task::query()->create([
+            'name' => 'Monitoring Edge Task',
+            'status' => 'active',
+            'schedule_enabled' => 1,
+        ]);
+        $category = Category::query()->create([
+            'name' => 'Monitoring Edge Category',
+            'slug' => 'monitoring-edge-category',
+        ]);
+        $author = Author::query()->create(['name' => 'Monitoring Edge Author']);
+        $article = Article::query()->create([
+            'title' => 'Deleted Monitoring Article',
+            'slug' => 'deleted-monitoring-article',
+            'content' => 'Article body.',
+            'category_id' => $category->id,
+            'author_id' => $author->id,
+            'task_id' => $task->id,
+            'status' => 'draft',
+            'review_status' => 'pending',
+        ]);
+        $run = TaskRun::query()->create([
+            'task_id' => $task->id,
+            'article_id' => $article->id,
+            'status' => 'recovering',
+            'created_at' => now(),
+        ]);
+        $longWorkerId = str_repeat('worker-segment-', 10);
+        WorkerHeartbeat::query()->create([
+            'worker_id' => $longWorkerId,
+            'status' => 'draining',
+            'last_seen_at' => now(),
+            'meta' => ['task_run_id' => $run->id],
+        ]);
+
+        $article->delete();
+        $task->delete();
+
+        $this->actingAs($admin, 'admin')
+            ->get(route('admin.tasks.jobs', ['run_id' => $run->id]))
+            ->assertOk()
+            ->assertSee(__('admin.tasks.jobs.status.unknown'))
+            ->assertSee(__('admin.tasks.monitoring.record_deleted'))
+            ->assertDontSee(route('admin.articles.edit', ['articleId' => $article->id]), false)
+            ->assertDontSee(route('admin.articles.index', ['task_id' => $task->id]), false);
+
+        $this->actingAs($admin, 'admin')
+            ->get(route('admin.tasks.workers'))
+            ->assertOk()
+            ->assertSee(__('admin.tasks.worker.status.unknown'))
+            ->assertSee($longWorkerId)
+            ->assertSee('class="break-all"', false);
+    }
+
     public function test_authenticated_admin_can_open_task_create_page(): void
     {
         $admin = Admin::query()->create([
@@ -81,6 +393,25 @@ class AdminTasksPageTest extends TestCase
             '<label class="relative inline-flex cursor-pointer items-center gap-3">',
             'data-ai-quality-toggle',
         ], false);
+        $response->assertSee('name="ai_quality_timeout_sampling_enabled"', false)
+            ->assertSee(__('admin.task_create.ai_quality.timeout_sampling_label'));
+    }
+
+    public function test_admin_task_form_persists_timeout_sampling_only_when_ai_quality_is_enabled(): void
+    {
+        $admin = $this->createTaskFormAdmin('tasks_timeout_sampling_admin');
+        $dependencies = $this->createTaskFormDependencies();
+
+        $this->actingAs($admin, 'admin')
+            ->post(route('admin.tasks.store'), $this->validTaskPayload($dependencies, [
+                'task_name' => 'Disabled quality sampling task',
+                'ai_quality_timeout_sampling_enabled' => '1',
+            ]))
+            ->assertRedirect(route('admin.tasks.index'))
+            ->assertSessionHasNoErrors();
+
+        $task = Task::query()->where('name', 'Disabled quality sampling task')->firstOrFail();
+        $this->assertFalse($task->ai_quality_timeout_sampling_enabled);
     }
 
     public function test_task_create_and_edit_forms_use_full_admin_content_width(): void
@@ -494,6 +825,7 @@ class AdminTasksPageTest extends TestCase
                 'task_name' => '已更新知识库任务',
                 'knowledge_base_ids' => [(string) $knowledgeBases[2]->id],
                 'task_revision' => app(DistributionOrchestrator::class)->taskRevision($task->fresh()),
+                'config_version' => (int) $task->fresh()->ai_quality_policy_version,
             ]))
             ->assertRedirect(route('admin.tasks.index'))
             ->assertSessionHasNoErrors();
@@ -512,6 +844,7 @@ class AdminTasksPageTest extends TestCase
             ->put(route('admin.tasks.update', ['taskId' => (int) $task->id]), $this->validTaskPayload($dependencies, [
                 'task_name' => '已清空知识库任务',
                 'task_revision' => app(DistributionOrchestrator::class)->taskRevision($task->fresh()),
+                'config_version' => (int) $task->fresh()->ai_quality_policy_version,
             ]))
             ->assertRedirect(route('admin.tasks.index'))
             ->assertSessionHasNoErrors();
@@ -566,6 +899,7 @@ class AdminTasksPageTest extends TestCase
                 'publish_scope' => 'distribution_only',
                 'distribution_channel_ids' => [],
                 'task_revision' => $matches[1],
+                'config_version' => (int) $task->ai_quality_policy_version,
             ]))
             ->assertSessionHasErrors();
 
@@ -645,6 +979,120 @@ class AdminTasksPageTest extends TestCase
             ->assertSee('id="batch-btn-'.(int) $pausedTask->id.'"', false)
             ->assertSee('data-batch-action="start"', false)
             ->assertSee('text-green-600 hover:text-green-800 hover:bg-green-50', false);
+    }
+
+    public function test_task_lifecycle_actions_use_an_accessible_in_page_confirmation_dialog(): void
+    {
+        $admin = $this->createTaskFormAdmin('tasks_lifecycle_dialog_admin');
+        $taskName = "Lifecycle Dialog Task\nwith 'quotes' and <markup>";
+        $task = Task::query()->create([
+            'name' => $taskName,
+            'status' => 'paused',
+            'schedule_enabled' => 0,
+            'publish_interval' => 3600,
+            'draft_limit' => 5,
+            'article_limit' => 10,
+        ]);
+
+        $response = $this->actingAs($admin, 'admin')
+            ->get(route('admin.tasks.index'))
+            ->assertOk()
+            ->assertSee('data-admin-action-dialog', false)
+            ->assertSee('role="alertdialog"', false)
+            ->assertSee('aria-modal="true"', false)
+            ->assertSee('data-admin-action-cancel', false)
+            ->assertSee('data-admin-action-confirm', false)
+            ->assertSee('window.AdminActionDialog.confirm', false)
+            ->assertSee('data-run-all-tasks', false)
+            ->assertDontSee('data-task-lifecycle-dialog', false)
+            ->assertDontSee('onclick="executeAllActiveTasks()', false)
+            ->assertDontSee('onclick="startBatchExecution(', false)
+            ->assertDontSee('onclick="stopBatchExecution(', false)
+            ->assertDontSee('onchange="handleStatusToggle(', false)
+            ->assertDontSee('window.confirm(', false);
+
+        $document = new \DOMDocument;
+        @$document->loadHTML((string) $response->getContent());
+        $button = $document->getElementById('batch-btn-'.(int) $task->id);
+
+        $this->assertNotNull($button);
+        $this->assertSame((string) $task->id, $button->getAttribute('data-task-id'));
+        $this->assertSame($taskName, $button->getAttribute('data-task-name'));
+    }
+
+    public function test_task_stop_succeeds_while_optimization_tables_are_pending_migration(): void
+    {
+        $admin = $this->createTaskFormAdmin('tasks_stop_schema_rollout_admin');
+        $task = Task::query()->create([
+            'name' => 'Schema rollout stop task',
+            'status' => 'active',
+            'schedule_enabled' => 1,
+            'publish_interval' => 3600,
+            'draft_limit' => 5,
+            'article_limit' => 10,
+        ]);
+        $run = TaskRun::query()->create([
+            'task_id' => $task->id,
+            'status' => 'pending',
+        ]);
+
+        Schema::dropIfExists('article_ai_optimization_steps');
+        Schema::dropIfExists('article_ai_optimization_runs');
+
+        $this->actingAs($admin, 'admin')
+            ->postJson(route('admin.tasks.batch'), [
+                'task_id' => $task->id,
+                'action' => 'stop',
+            ])
+            ->assertOk()
+            ->assertJsonPath('success', true);
+
+        $this->assertSame('paused', $task->fresh()->status);
+        $this->assertSame(0, (int) $task->fresh()->schedule_enabled);
+        $this->assertSame('cancelled', $run->fresh()->status);
+    }
+
+    public function test_task_batch_failure_does_not_expose_database_details(): void
+    {
+        $admin = $this->createTaskFormAdmin('tasks_stop_error_redaction_admin');
+        $task = Task::query()->create([
+            'name' => 'Redacted stop failure task',
+            'status' => 'active',
+            'schedule_enabled' => 1,
+            'publish_interval' => 3600,
+            'draft_limit' => 5,
+            'article_limit' => 10,
+        ]);
+
+        Schema::dropIfExists('task_runs');
+
+        $response = $this->actingAs($admin, 'admin')
+            ->postJson(route('admin.tasks.batch'), [
+                'task_id' => $task->id,
+                'action' => 'stop',
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('success', false)
+            ->assertJsonPath('message', __('admin.tasks.message.status_update_failed'));
+
+        $this->assertStringNotContainsString('task_runs', (string) $response->getContent());
+        $this->assertSame('active', $task->fresh()->status);
+        $this->assertSame(1, (int) $task->fresh()->schedule_enabled);
+    }
+
+    public function test_task_health_failure_does_not_expose_database_details(): void
+    {
+        $admin = $this->createTaskFormAdmin('tasks_health_error_redaction_admin');
+
+        Schema::dropIfExists('task_runs');
+
+        $response = $this->actingAs($admin, 'admin')
+            ->getJson(route('admin.tasks.health'))
+            ->assertStatus(500)
+            ->assertJsonPath('success', false)
+            ->assertJsonPath('message', __('admin.tasks.message.status_update_failed'));
+
+        $this->assertStringNotContainsString('task_runs', (string) $response->getContent());
     }
 
     public function test_task_list_shows_distribution_failure_summary(): void
@@ -771,6 +1219,239 @@ class AdminTasksPageTest extends TestCase
             '/<details(?=[^>]*data-task-trash)(?![^>]*\sopen(?:\s|=|>))[^>]*>/',
             $trashHtml,
         );
+    }
+
+    public function test_authenticated_admin_can_restore_a_task_from_trash_in_a_safe_paused_state(): void
+    {
+        $admin = $this->createTaskFormAdmin('tasks_restore_admin');
+        $category = Category::query()->create([
+            'name' => 'Restore task category',
+            'slug' => 'restore-task-category',
+        ]);
+        $author = Author::query()->create(['name' => 'Restore task author']);
+        $task = Task::query()->create([
+            'name' => 'Task ready to restore',
+            'status' => 'active',
+            'schedule_enabled' => 1,
+            'next_run_at' => now()->addHour(),
+        ]);
+        $article = Article::query()->create([
+            'title' => 'Article moved with deleted task',
+            'slug' => 'article-moved-with-deleted-task',
+            'content' => 'Restore task article body.',
+            'category_id' => $category->id,
+            'author_id' => $author->id,
+            'task_id' => $task->id,
+            'status' => 'draft',
+            'review_status' => 'pending',
+        ]);
+
+        $this->actingAs($admin, 'admin')
+            ->post(route('admin.tasks.delete', ['taskId' => $task->id]))
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+
+        $trashPage = $this->actingAs($admin, 'admin')
+            ->get(route('admin.tasks.index'))
+            ->assertOk()
+            ->assertSee('data-admin-confirm-form', false)
+            ->assertSee('data-admin-confirm-tone="success"', false)
+            ->assertSee('data-admin-confirm-title="'.__('admin.tasks.trash.confirm_restore', ['name' => $task->name]).'"', false)
+            ->assertSee('data-admin-confirm-submit disabled aria-disabled="true"', false)
+            ->assertSee(__('admin.tasks.trash.action_restore'))
+            ->assertDontSee('onsubmit="return confirm', false)
+            ->assertSee('data-lucide="rotate-ccw"', false);
+
+        $snapshotId = (int) $trashPage->viewData('trashPagination')['snapshot_id'];
+        $trashSequence = (int) $trashPage->viewData('trashedTasks')[0]['trash_sequence'];
+        $restoreUrl = route('admin.tasks.restore', [
+            'taskId' => $task->id,
+            'page' => 1,
+            'trash_page' => 1,
+            'trash_snapshot_id' => $snapshotId,
+            'trash_sequence' => $trashSequence,
+        ]);
+        $returnUrl = route('admin.tasks.index', [
+            'page' => 1,
+            'trash_page' => 1,
+            'trash_snapshot_id' => $snapshotId,
+        ]).'#task-trash';
+
+        $this->actingAs($admin, 'admin')
+            ->post($restoreUrl)
+            ->assertRedirect($returnUrl)
+            ->assertSessionHasNoErrors()
+            ->assertSessionHas('message', __('admin.tasks.message.restore_success', [
+                'name' => 'Task ready to restore',
+            ]));
+
+        $restoredTask = Task::query()->findOrFail($task->id);
+        $this->assertSame('paused', (string) $restoredTask->status);
+        $this->assertSame(0, (int) $restoredTask->schedule_enabled);
+        $this->assertNull($restoredTask->next_run_at);
+        $this->assertDatabaseMissing('task_trash_entries', ['task_id' => $task->id]);
+        $this->assertTrue(Article::onlyTrashed()->whereKey($article->id)->exists());
+        $this->assertNull(Article::withTrashed()->findOrFail($article->id)->task_id);
+    }
+
+    public function test_task_restore_rejects_an_expired_trash_entry_even_before_pruning_runs(): void
+    {
+        $admin = $this->createTaskFormAdmin('tasks_restore_expired_admin');
+        $task = Task::query()->create([
+            'name' => 'Expired restore task',
+            'status' => 'paused',
+            'schedule_enabled' => 0,
+        ]);
+        $task->delete();
+        Task::onlyTrashed()->whereKey($task->id)->update([
+            'deleted_at' => now()->subDays(Task::TRASH_RETENTION_DAYS),
+        ]);
+        DB::table('task_trash_entries')->where('task_id', $task->id)->update([
+            'deleted_at' => now()->subDays(Task::TRASH_RETENTION_DAYS),
+        ]);
+        $trashSequence = (int) DB::table('task_trash_entries')
+            ->where('task_id', $task->id)
+            ->value('sequence');
+
+        $returnUrl = route('admin.tasks.index', [
+            'page' => 1,
+            'trash_page' => 1,
+        ]).'#task-trash';
+
+        $this->actingAs($admin, 'admin')
+            ->post(route('admin.tasks.restore', [
+                'taskId' => $task->id,
+                'page' => 1,
+                'trash_page' => 1,
+                'trash_sequence' => $trashSequence,
+            ]))
+            ->assertRedirect($returnUrl)
+            ->assertSessionHasErrors();
+
+        $this->assertTrue(Task::onlyTrashed()->whereKey($task->id)->exists());
+        $this->assertDatabaseHas('task_trash_entries', ['task_id' => $task->id]);
+    }
+
+    public function test_stale_restore_form_cannot_undo_a_newer_task_deletion(): void
+    {
+        $admin = $this->createTaskFormAdmin('tasks_restore_stale_form_admin');
+        $task = Task::query()->create([
+            'name' => 'Task deleted twice',
+            'status' => 'paused',
+            'schedule_enabled' => 0,
+        ]);
+
+        $this->actingAs($admin, 'admin')
+            ->post(route('admin.tasks.delete', ['taskId' => $task->id]))
+            ->assertSessionHasNoErrors();
+        $firstSequence = (int) DB::table('task_trash_entries')
+            ->where('task_id', $task->id)
+            ->value('sequence');
+        $this->actingAs($admin, 'admin')
+            ->post(route('admin.tasks.restore', [
+                'taskId' => $task->id,
+                'trash_sequence' => $firstSequence,
+            ]))
+            ->assertSessionHasNoErrors();
+        $this->actingAs($admin, 'admin')
+            ->post(route('admin.tasks.delete', ['taskId' => $task->id]))
+            ->assertSessionHasNoErrors();
+        $secondSequence = (int) DB::table('task_trash_entries')
+            ->where('task_id', $task->id)
+            ->value('sequence');
+        $this->assertGreaterThan($firstSequence, $secondSequence);
+
+        $this->actingAs($admin, 'admin')
+            ->post(route('admin.tasks.restore', [
+                'taskId' => $task->id,
+                'trash_sequence' => $firstSequence,
+            ]))
+            ->assertSessionHasErrors();
+
+        $this->assertTrue(Task::onlyTrashed()->whereKey($task->id)->exists());
+        $this->assertDatabaseHas('task_trash_entries', [
+            'task_id' => $task->id,
+            'sequence' => $secondSequence,
+        ]);
+    }
+
+    public function test_only_a_super_admin_can_restore_a_task_that_used_a_hosted_site(): void
+    {
+        $superAdmin = $this->createTaskFormAdmin('tasks_restore_hosted_super_admin');
+        $superAdmin->update(['role' => 'super_admin']);
+        $regularAdmin = $this->createTaskFormAdmin('tasks_restore_hosted_regular_admin');
+        $channel = DistributionChannel::query()->create([
+            'name' => 'Restore protected hosted site',
+            'domain' => 'restore-protected.sites.test',
+            'endpoint_url' => 'https://restore-protected.sites.test',
+            'channel_type' => DistributionChannel::TYPE_HOSTED_SITE,
+            'status' => DistributionChannel::STATUS_ACTIVE,
+        ]);
+        $task = Task::query()->create([
+            'name' => 'Protected hosted task in trash',
+            'status' => 'paused',
+            'schedule_enabled' => 0,
+            'publish_scope' => 'distribution_only',
+        ]);
+        $task->distributionChannels()->attach($channel->id);
+
+        $this->actingAs($superAdmin, 'admin')
+            ->post(route('admin.tasks.delete', ['taskId' => $task->id]))
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+        $trashSequence = (int) DB::table('task_trash_entries')
+            ->where('task_id', $task->id)
+            ->value('sequence');
+
+        $regularTrash = $this->actingAs($regularAdmin, 'admin')
+            ->get(route('admin.tasks.index', ['trash_page' => 1]))
+            ->assertOk()
+            ->assertSee('Protected hosted task in trash')
+            ->assertSee(__('admin.tasks.trash.super_admin_restore'));
+        $this->assertStringNotContainsString(
+            route('admin.tasks.restore', ['taskId' => $task->id]),
+            (string) $regularTrash->getContent(),
+        );
+
+        $this->actingAs($regularAdmin, 'admin')
+            ->post(route('admin.tasks.restore', [
+                'taskId' => $task->id,
+                'trash_sequence' => $trashSequence,
+            ]))
+            ->assertRedirect()
+            ->assertSessionHasErrors();
+        $this->assertTrue(Task::onlyTrashed()->whereKey($task->id)->exists());
+
+        $this->actingAs($superAdmin, 'admin')
+            ->post(route('admin.tasks.restore', [
+                'taskId' => $task->id,
+                'trash_sequence' => $trashSequence,
+            ]))
+            ->assertRedirect()
+            ->assertSessionHasNoErrors();
+        $this->assertNotNull(Task::query()->find($task->id));
+    }
+
+    public function test_task_restore_copy_is_available_in_every_supported_admin_locale(): void
+    {
+        $keys = [
+            'admin.tasks.trash.action_restore',
+            'admin.tasks.trash.super_admin_restore',
+            'admin.tasks.trash.confirm_restore',
+            'admin.tasks.trash.column.actions',
+            'admin.tasks.message.restore_success',
+            'admin.tasks.message.restore_failed',
+        ];
+
+        foreach (['zh_CN', 'en', 'ja', 'es', 'ru', 'pt_BR'] as $locale) {
+            app()->setLocale($locale);
+            foreach ($keys as $key) {
+                $translated = __($key, ['name' => 'Example']);
+                $this->assertIsString($translated, $locale.' '.$key);
+                $this->assertNotSame($key, $translated, $locale.' '.$key);
+                $this->assertNotSame('', trim($translated), $locale.' '.$key);
+            }
+        }
     }
 
     public function test_task_delete_terminalizes_queued_and_in_flight_distributions(): void
@@ -1054,18 +1735,17 @@ class AdminTasksPageTest extends TestCase
         $this->actingAs($admin, 'admin')
             ->get(route('admin.tasks.index'))
             ->assertOk()
-            ->assertSee('data-task-delete-form', false)
-            ->assertSee('type="button"', false)
-            ->assertSee('data-task-delete-trigger', false)
-            ->assertSee('data-task-delete-submit hidden', false)
-            ->assertSee('data-task-name="Dialog Preview Task"', false)
-            ->assertSee('data-task-delete-dialog', false)
-            ->assertSee('data-deleting-label="'.__('admin.tasks.delete_dialog.deleting').'"', false)
+            ->assertSee('data-admin-confirm-form', false)
+            ->assertSee('data-admin-confirm-tone="danger"', false)
+            ->assertSee('data-admin-confirm-title="'.__('admin.tasks.delete_dialog.title').' “Dialog Preview Task”"', false)
+            ->assertSee('data-admin-confirm-message="'.__('admin.tasks.delete_dialog.impact').'"', false)
+            ->assertSee('data-admin-confirm-submit disabled aria-disabled="true"', false)
+            ->assertSee('data-admin-action-dialog', false)
             ->assertSee('role="alertdialog"', false)
             ->assertSee('aria-modal="true"', false)
-            ->assertSee('fixed inset-0 m-auto', false)
             ->assertSee(__('admin.tasks.delete_dialog.title'))
             ->assertSee(__('admin.tasks.delete_dialog.impact'))
+            ->assertDontSee('data-task-delete-dialog', false)
             ->assertDontSee('onsubmit="return confirm', false);
     }
 
@@ -1091,6 +1771,21 @@ class AdminTasksPageTest extends TestCase
             ->assertSee('min-w-[1200px]', false)
             ->assertSee('w-[11.5rem] py-4 pl-3 pr-4 align-top sm:w-[12.5rem] sm:pl-4 sm:pr-5', false)
             ->assertSee('flex items-center justify-end gap-1.5 sm:gap-2', false);
+    }
+
+    private function ensureWorkerHeartbeatTable(): void
+    {
+        if (Schema::hasTable('worker_heartbeats')) {
+            return;
+        }
+
+        Schema::create('worker_heartbeats', function (Blueprint $table): void {
+            $table->string('worker_id')->primary();
+            $table->string('status', 20)->default('idle');
+            $table->timestamp('last_seen_at')->nullable();
+            $table->text('meta')->nullable();
+            $table->timestamps();
+        });
     }
 
     private function createTaskFormAdmin(string $username): Admin

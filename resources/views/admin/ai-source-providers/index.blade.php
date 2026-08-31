@@ -12,14 +12,9 @@
         data-test-initialization-error="{{ __('admin.ai_source_providers.test_network_error') }}"
     >
         <div class="mb-8 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div class="flex items-start gap-4">
-                <a href="{{ route('admin.ai.configurator') }}" aria-label="{{ __('admin.common.back') }}" class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-white text-gray-500 shadow ring-1 ring-gray-200 transition-[color,background-color,transform] duration-150 hover:bg-gray-50 hover:text-gray-800 active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2">
-                    <i data-lucide="arrow-left" class="w-5 h-5"></i>
-                </a>
-                <div class="min-w-0">
-                    <h1 class="text-2xl font-bold text-gray-900">{{ __('admin.ai_source_providers.page_title') }}</h1>
-                    <p class="mt-1 text-sm text-gray-600">{{ __('admin.ai_source_providers.page_subtitle') }}</p>
-                </div>
+            <div class="min-w-0">
+                <h1 class="text-2xl font-bold text-gray-900">{{ __('admin.ai_source_providers.page_title') }}</h1>
+                <p class="mt-1 text-sm text-gray-600">{{ __('admin.ai_source_providers.page_subtitle') }}</p>
             </div>
             <a href="{{ route('admin.ai-source-providers.create') }}" class="inline-flex min-h-10 items-center justify-center gap-2 self-start rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-[background-color,transform] duration-150 hover:bg-emerald-700 active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2">
                 <i data-lucide="plus" class="w-4 h-4"></i>
@@ -237,9 +232,9 @@
                                         <div class="flex flex-wrap items-center gap-3">
                                             <button type="button" data-provider-test data-test-url="{{ route('admin.ai-source-providers.test', ['providerId' => $provider['id']]) }}" data-result-target="provider-test-result-{{ (int) $provider['id'] }}" data-connection-test-button disabled aria-disabled="true" class="inline-flex min-h-10 items-center text-emerald-600 transition-[color,opacity,transform] duration-150 hover:text-emerald-900 active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-emerald-600 disabled:active:scale-100">{{ __('admin.ai_source_providers.test') }}</button>
                                             <a href="{{ route('admin.ai-source-providers.edit', ['providerId' => $provider['id']]) }}" class="inline-flex min-h-10 items-center text-blue-600 transition-[color,transform] duration-150 hover:text-blue-900 active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2">{{ __('admin.ai_source_providers.edit') }}</a>
-                                            <form method="POST" action="{{ route('admin.ai-source-providers.delete', ['providerId' => $provider['id']]) }}" data-provider-delete-form data-confirm-message="{{ __('admin.ai_source_providers.confirm_delete', ['name' => $provider['name']]) }}">
+                                            <form method="POST" action="{{ route('admin.ai-source-providers.delete', ['providerId' => $provider['id']]) }}" data-provider-delete-form data-admin-confirm-form data-admin-confirm-tone="danger" data-admin-confirm-title="{{ __('admin.ai_source_providers.confirm_delete', ['name' => $provider['name']]) }}" data-admin-confirm-message="{{ __('admin.action_dialog.generic_impact') }}" data-admin-confirm-label="{{ __('admin.ai_source_providers.delete') }}">
                                                 @csrf
-                                                <button type="submit" data-provider-delete-submit disabled aria-disabled="true" class="inline-flex min-h-10 items-center text-red-600 transition-[color,opacity,transform] duration-150 hover:text-red-900 active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-red-600 disabled:active:scale-100">{{ __('admin.ai_source_providers.delete') }}</button>
+                                                <button type="submit" data-provider-delete-submit data-admin-confirm-submit disabled aria-disabled="true" class="inline-flex min-h-10 items-center text-red-600 transition-[color,opacity,transform] duration-150 hover:text-red-900 active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-red-600 disabled:active:scale-100">{{ __('admin.ai_source_providers.delete') }}</button>
                                             </form>
                                         </div>
                                         <div id="provider-test-result-{{ (int) $provider['id'] }}" class="mt-2 max-w-xs whitespace-normal text-xs" data-connection-test-result role="status" aria-live="polite" aria-atomic="true"></div>

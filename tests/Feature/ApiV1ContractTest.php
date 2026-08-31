@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Admin;
 use App\Models\AiModel;
+use App\Models\Article;
 use App\Models\Author;
 use App\Models\Category;
 use App\Models\DistributionChannel;
@@ -14,7 +15,10 @@ use App\Models\Prompt;
 use App\Models\Task;
 use App\Models\Title;
 use App\Models\TitleLibrary;
+use App\Services\GeoFlow\AiQualityAuditService;
+use App\Services\GeoFlow\AiQualityRetrievalReadinessService;
 use App\Services\GeoFlow\ArticleAiQualityInvalidationService;
+use App\Services\GeoFlow\ArticleAiQualityPolicyResolver;
 use App\Services\GeoFlow\ArticleGeoFlowService;
 use App\Services\GeoFlow\JobQueueService;
 use App\Services\GeoFlow\KnowledgeChunkSyncCoordinator;
@@ -57,6 +61,36 @@ class ApiV1ContractTest extends TestCase
         $plain = $admin->createToken('contract-test', $scopes)->plainTextToken;
 
         return ['plain' => $plain];
+    }
+
+    public function test_article_quality_status_uses_read_scope_and_a_lightweight_contract(): void
+    {
+        $admin = $this->createActiveAdmin('quality_status_api_admin', 'p');
+        $category = Category::query()->create(['name' => 'Quality API category', 'slug' => 'quality-api-category']);
+        $author = Author::query()->create(['name' => 'Quality API author']);
+        $article = Article::query()->create([
+            'title' => 'Quality status article',
+            'slug' => 'quality-status-article',
+            'content' => 'Safe content.',
+            'category_id' => $category->id,
+            'author_id' => $author->id,
+            'status' => 'draft',
+            'review_status' => 'pending',
+        ]);
+
+        $writeOnly = $this->createBearerToken($admin, ['articles:write']);
+        $this->withHeader('Authorization', 'Bearer '.$writeOnly['plain'])
+            ->getJson("/api/v1/articles/{$article->id}/ai-quality/status")
+            ->assertForbidden();
+
+        $read = $this->createBearerToken($admin, ['articles:read']);
+        $this->withHeader('Authorization', 'Bearer '.$read['plain'])
+            ->getJson("/api/v1/articles/{$article->id}/ai-quality/status")
+            ->assertOk()
+            ->assertJsonPath('data.status', 'not_started')
+            ->assertJsonPath('data.phase', 'not_started')
+            ->assertJsonPath('data.elapsed_ms', 0)
+            ->assertJsonMissingPath('data.article');
     }
 
     public function test_catalog_requires_bearer_token(): void
@@ -454,7 +488,7 @@ class ApiV1ContractTest extends TestCase
         $task->distributionChannels()->attach($channel->id);
 
         $this->withHeader('Authorization', 'Bearer '.$bearer['plain'])
-            ->patchJson("/api/v1/tasks/{$task->id}", ['name' => 'Unauthorized update'])
+            ->patchJson("/api/v1/tasks/{$task->id}", ['name' => 'Unauthorized update', 'config_version' => 1])
             ->assertForbidden()
             ->assertJsonPath('error.code', 'forbidden');
         $this->withHeader('Authorization', 'Bearer '.$bearer['plain'])
@@ -479,6 +513,61 @@ class ApiV1ContractTest extends TestCase
             'task_id' => $task->id,
             'distribution_channel_id' => $channel->id,
         ]);
+    }
+
+    public function test_tasks_write_scope_cannot_preserve_or_execute_an_auto_publishing_task(): void
+    {
+        $admin = $this->createActiveAdmin('task_scope_boundary_admin', 'p');
+        $bearer = $this->createBearerToken($admin, ['tasks:write']);
+        $updatedTask = Task::query()->create([
+            'name' => 'Auto publishing task to update',
+            'status' => 'paused',
+            'need_review' => false,
+        ]);
+
+        $this->withHeader('Authorization', 'Bearer '.$bearer['plain'])
+            ->patchJson("/api/v1/tasks/{$updatedTask->id}", [
+                'name' => 'Review-bound task',
+                'config_version' => 1,
+            ])
+            ->assertOk()
+            ->assertJsonPath('data.need_review', 1);
+
+        $autoTask = Task::query()->create([
+            'name' => 'Auto publishing task to enqueue',
+            'status' => 'active',
+            'schedule_enabled' => 1,
+            'need_review' => false,
+        ]);
+        $this->withHeader('Authorization', 'Bearer '.$bearer['plain'])
+            ->postJson("/api/v1/tasks/{$autoTask->id}/enqueue")
+            ->assertForbidden()
+            ->assertJsonPath('error.code', 'forbidden')
+            ->assertJsonPath('error.details.required_scope', 'articles:publish');
+    }
+
+    public function test_restricted_task_token_must_supply_the_current_quality_config_version(): void
+    {
+        $admin = $this->createActiveAdmin('task_config_version_admin', 'p');
+        $bearer = $this->createBearerToken($admin, ['tasks:write']);
+        $task = Task::query()->create([
+            'name' => 'CAS protected task',
+            'status' => 'paused',
+            'need_review' => true,
+            'ai_quality_config_version' => 4,
+            'ai_quality_policy_version' => 4,
+        ]);
+
+        $this->withHeader('Authorization', 'Bearer '.$bearer['plain'])
+            ->patchJson("/api/v1/tasks/{$task->id}", [
+                'ai_quality_timeout_sampling_enabled' => true,
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('error.code', 'task_ai_quality_config_version_required')
+            ->assertJsonPath('error.details.required_field', 'config_version');
+
+        $this->assertFalse((bool) $task->fresh()->ai_quality_timeout_sampling_enabled);
+        $this->assertSame(4, (int) $task->fresh()->ai_quality_config_version);
     }
 
     public function test_super_admin_api_can_manage_a_hosted_site_task(): void
@@ -518,7 +607,7 @@ class ApiV1ContractTest extends TestCase
         $task->distributionChannels()->attach($channel->id);
 
         $this->withHeader('Authorization', 'Bearer '.$bearer['plain'])
-            ->patchJson("/api/v1/tasks/{$task->id}", ['name' => 'Updated hosted API task'])
+            ->patchJson("/api/v1/tasks/{$task->id}", ['name' => 'Updated hosted API task', 'config_version' => 1])
             ->assertOk()
             ->assertJsonPath('data.name', 'Updated hosted API task');
         $this->withHeader('Authorization', 'Bearer '.$bearer['plain'])
@@ -561,10 +650,11 @@ class ApiV1ContractTest extends TestCase
 
         app(ArticleGeoFlowService::class)->createArticle([
             'title' => 'Article task lock regression',
-            'content' => 'A safe article body.',
+            'content' => 'A safe article body [K1]. Vitamin K2 stays.',
             'category_id' => $category->id,
             'author_id' => $author->id,
             'task_id' => $task->id,
+            'is_ai_generated' => 1,
         ], (int) $admin->id);
 
         $insertIndex = collect($events)->search(fn (array $event): bool => $event['type'] === 'article_insert');
@@ -572,6 +662,10 @@ class ApiV1ContractTest extends TestCase
         $this->assertTrue(collect($events)->take($insertIndex)->contains(
             fn (array $event): bool => $event['type'] === 'task_select' && $event['transaction_level'] > 0,
         ), json_encode($events));
+        $this->assertDatabaseHas('articles', [
+            'title' => 'Article task lock regression',
+            'content' => 'A safe article body. Vitamin K2 stays.',
+        ]);
     }
 
     public function test_task_create_accepts_omitted_optional_material_fields(): void
@@ -615,6 +709,8 @@ class ApiV1ContractTest extends TestCase
             ->assertJsonPath('data.knowledge_base_id', null)
             ->assertJsonPath('data.fixed_category_id', null);
 
+        $response->assertJsonPath('data.ai_quality_timeout_sampling_enabled', false);
+
         $this->assertDatabaseHas('tasks', [
             'id' => $response->json('data.id'),
             'image_library_id' => null,
@@ -622,6 +718,49 @@ class ApiV1ContractTest extends TestCase
             'knowledge_base_id' => null,
             'fixed_category_id' => null,
         ]);
+    }
+
+    public function test_task_api_rejects_timeout_sampling_when_ai_quality_is_disabled(): void
+    {
+        $admin = $this->createActiveAdmin('timeout_sampling_api_admin', 'p');
+        $bearer = $this->createBearerToken($admin, ['tasks:write', 'tasks:read']);
+        $model = AiModel::query()->create([
+            'name' => 'Timeout Sampling API Model',
+            'model_id' => 'timeout-sampling-api-model',
+            'model_type' => 'chat',
+            'status' => 'active',
+        ]);
+        $prompt = Prompt::query()->create([
+            'name' => 'Timeout Sampling API Prompt',
+            'type' => 'content',
+            'content' => 'Write an article.',
+        ]);
+        $titleLibrary = TitleLibrary::query()->create([
+            'name' => 'Timeout Sampling API Titles',
+            'description' => '',
+            'title_count' => 0,
+        ]);
+
+        $response = $this->withHeader('Authorization', 'Bearer '.$bearer['plain'])
+            ->postJson('/api/v1/tasks', [
+                'name' => 'Timeout sampling API task',
+                'title_library_id' => $titleLibrary->id,
+                'prompt_id' => $prompt->id,
+                'ai_model_id' => $model->id,
+                'status' => 'paused',
+                'category_mode' => 'smart',
+                'draft_limit' => 1,
+                'article_limit' => 1,
+                'ai_quality_enabled' => false,
+                'ai_quality_timeout_sampling_enabled' => true,
+            ]);
+
+        $response->assertCreated()
+            ->assertJsonPath('data.ai_quality_enabled', false)
+            ->assertJsonPath('data.ai_quality_timeout_sampling_enabled', false);
+
+        $this->assertFalse(Task::query()->findOrFail((int) $response->json('data.id'))
+            ->ai_quality_timeout_sampling_enabled);
     }
 
     public function test_task_create_prefers_knowledge_base_ids_over_legacy_knowledge_base_id(): void
@@ -732,6 +871,9 @@ class ApiV1ContractTest extends TestCase
             $realtime,
             app(TaskTitleReadinessService::class),
             app(ArticleAiQualityInvalidationService::class),
+            app(ArticleAiQualityPolicyResolver::class),
+            app(AiQualityRetrievalReadinessService::class),
+            app(AiQualityAuditService::class),
         );
 
         $baselineTransactionLevel = DB::transactionLevel();
@@ -802,5 +944,39 @@ class ApiV1ContractTest extends TestCase
             ->assertJsonPath('error.details.task_count', 1);
 
         $this->assertNotNull(Category::query()->find($category->id));
+    }
+
+    public function test_material_api_counts_trashed_articles_and_keeps_their_author_protected(): void
+    {
+        $admin = $this->createActiveAdmin('trashed_article_author_admin', 'p');
+        $bearer = $this->createBearerToken($admin, ['materials:read', 'materials:write']);
+        $author = Author::query()->create(['name' => 'API trashed article author']);
+        $category = Category::query()->create([
+            'name' => 'API trashed article category',
+            'slug' => 'api-trashed-article-category',
+        ]);
+        $article = Article::query()->create([
+            'title' => 'API trashed author article',
+            'slug' => 'api-trashed-author-article',
+            'content' => 'Article retained in the trash.',
+            'category_id' => $category->id,
+            'author_id' => $author->id,
+        ]);
+        $article->delete();
+
+        $this->withHeader('Authorization', 'Bearer '.$bearer['plain'])
+            ->getJson('/api/v1/materials/authors')
+            ->assertOk()
+            ->assertJsonPath('data.items.0.id', (int) $author->id)
+            ->assertJsonPath('data.items.0.article_count', 0)
+            ->assertJsonPath('data.items.0.trashed_count', 1);
+
+        $this->withHeader('Authorization', 'Bearer '.$bearer['plain'])
+            ->deleteJson('/api/v1/materials/authors/'.(int) $author->id)
+            ->assertConflict()
+            ->assertJsonPath('error.code', 'material_in_use')
+            ->assertJsonPath('error.details.trashed_count', 1);
+
+        $this->assertModelExists($author);
     }
 }

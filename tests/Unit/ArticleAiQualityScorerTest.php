@@ -68,6 +68,25 @@ class ArticleAiQualityScorerTest extends TestCase
         $this->assertSame('blocked', $result['decision']);
     }
 
+    public function test_high_severity_issue_requires_review_even_when_score_stays_above_pass_threshold(): void
+    {
+        $result = (new ArticleAiQualityScorer)->score([
+            'promotion_context' => 'informational',
+            'knowledge_coverage' => 'sufficient',
+            'issues' => [[
+                'code' => 'data_mismatch',
+                'severity' => 'high',
+                'field' => 'content',
+                'quote' => '系统默认启用该策略',
+                'knowledge_refs' => ['K1'],
+            ]],
+            'uncertainties' => [],
+        ], 85, 70);
+
+        $this->assertSame(88, $result['score']);
+        $this->assertSame('needs_review', $result['decision']);
+    }
+
     public function test_incomplete_knowledge_coverage_forces_manual_review(): void
     {
         $result = (new ArticleAiQualityScorer)->score([
@@ -79,5 +98,25 @@ class ArticleAiQualityScorerTest extends TestCase
 
         $this->assertSame(100, $result['score']);
         $this->assertSame('needs_review', $result['decision']);
+    }
+
+    public function test_removed_ai_generation_disclosure_code_is_rejected(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('AI quality issue code is invalid.');
+
+        (new ArticleAiQualityScorer)->score([
+            'promotion_context' => 'informational',
+            'knowledge_coverage' => 'sufficient',
+            'issues' => [[
+                'code' => 'ai_generated_disclosure',
+                'severity' => 'high',
+                'field' => 'content',
+                'quote' => '文章正文',
+                'knowledge_refs' => [],
+            ]],
+            'uncertainties' => [],
+        ], 85, 70);
+
     }
 }

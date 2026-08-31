@@ -24,69 +24,32 @@
         }
     }
     $articleListAnchor = '#article-list';
-    $categoryManageUrl = route('admin.categories.index');
     $reviewCenterUrl = route('admin.articles.index', ['review_status' => 'pending']).$articleListAnchor;
     $trashUrl = route('admin.articles.index', ['trashed' => 1]);
     $articlesIndexUrl = route('admin.articles.index');
     $clearTaskFilterUrl = route('admin.articles.index', request()->except(['task_id', 'page']));
-    $contentWorkbenchItems = [
-        [
-            'icon' => 'shield-check',
-            'title' => __('admin.articles.workbench.review_title'),
-            'count' => (int) ($stats['pending_review'] ?? 0),
-            'href' => $reviewCenterUrl,
-            'iconClass' => 'bg-amber-50 text-amber-600 ring-amber-100',
-        ],
-        [
-            'icon' => 'edit',
-            'title' => __('admin.articles.workbench.optimize_title'),
-            'count' => (int) ($stats['draft'] ?? 0),
-            'href' => route('admin.articles.index', ['status' => 'draft']).$articleListAnchor,
-            'iconClass' => 'bg-blue-50 text-blue-600 ring-blue-100',
-        ],
-        [
-            'icon' => 'send',
-            'title' => __('admin.articles.workbench.distribution_title'),
-            'count' => (int) ($stats['published'] ?? 0),
-            'href' => route('admin.articles.index', ['status' => 'published']).$articleListAnchor,
-            'iconClass' => 'bg-emerald-50 text-emerald-600 ring-emerald-100',
-        ],
-        [
-            'icon' => 'chart-no-axes-combined',
-            'title' => __('admin.articles.workbench.observation_title'),
-            'count' => (int) ($stats['observed'] ?? 0),
-            'href' => route('admin.analytics'),
-            'iconClass' => 'bg-purple-50 text-purple-600 ring-purple-100',
-        ],
-    ];
-    $workbenchPriority = collect($contentWorkbenchItems)
-        ->sortByDesc(fn ($item) => (int) ($item['count'] ?? 0))
-        ->first();
-    $workbenchHasPriority = (int) ($workbenchPriority['count'] ?? 0) > 0;
+    $adminUiV3Enabled = (bool) config('geoflow.admin_ui_v3_enabled', false);
+    $articleNavigationActive = $isTrashView
+        ? 'trash'
+        : ($selectedReviewStatus === 'pending' ? 'review' : 'article-list');
 @endphp
+
+@section('topbar-title', $isTrashView ? __('admin.articles.trash.title') : __('admin.articles.topbar_title'))
+@section('topbar-icon', $isTrashView ? 'trash-2' : 'file-text')
 
 @section('content')
     <div class="px-4 sm:px-0">
-        <header class="mb-6 flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
-            <div class="min-w-0 max-w-3xl">
-                <h1 class="text-3xl font-bold leading-9 tracking-tight text-gray-900">{{ $pageTitle }}</h1>
-                <p class="mt-2 text-[15px] leading-6 text-gray-600">{{ $isTrashView ? __('admin.articles.trash.subtitle') : __('admin.articles.page_subtitle') }}</p>
-                @if(!$isTrashView)
-                    <nav class="-ml-2 mt-3 flex flex-wrap items-center gap-1" aria-label="{{ __('admin.articles.page_title') }}">
-                        <a href="{{ $categoryManageUrl }}" class="inline-flex min-h-10 items-center gap-2 rounded-md px-2.5 text-sm font-medium text-gray-600 transition-[background-color,color,transform] duration-150 [@media(hover:hover)]:hover:bg-white [@media(hover:hover)]:hover:text-gray-900 active:scale-[0.96] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600">
-                            <i data-lucide="folder" class="h-4 w-4"></i>
-                            {{ __('admin.button.category_manage') }}
-                        </a>
-                        <a href="{{ $reviewCenterUrl }}" class="inline-flex min-h-10 items-center gap-2 rounded-md px-2.5 text-sm font-medium text-gray-600 transition-[background-color,color,transform] duration-150 [@media(hover:hover)]:hover:bg-white [@media(hover:hover)]:hover:text-gray-900 active:scale-[0.96] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600">
-                            <i data-lucide="eye" class="h-4 w-4"></i>
-                            {{ __('admin.button.review_center') }}
-                        </a>
-                        <a href="{{ $trashUrl }}" class="inline-flex min-h-10 items-center gap-2 rounded-md px-2.5 text-sm font-medium text-gray-600 transition-[background-color,color,transform] duration-150 [@media(hover:hover)]:hover:bg-white [@media(hover:hover)]:hover:text-gray-900 active:scale-[0.96] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600">
-                            <i data-lucide="trash-2" class="h-4 w-4"></i>
-                            {{ __('admin.button.trash') }}
-                        </a>
-                    </nav>
+        <header class="mb-6 flex flex-col gap-5 xl:flex-row xl:items-center xl:justify-between">
+            <div class="min-w-0 flex-1">
+                @if($adminUiV3Enabled)
+                    <h1 class="sr-only">{{ $pageTitle }}</h1>
+                @else
+                    <h1 class="text-3xl font-bold leading-9 tracking-tight text-gray-900">{{ $pageTitle }}</h1>
+                    <p class="mt-2 text-[15px] leading-6 text-gray-600">{{ $isTrashView ? __('admin.articles.trash.subtitle') : __('admin.articles.page_subtitle') }}</p>
                 @endif
+                <div @class(['mt-3' => !$adminUiV3Enabled])>
+                    <x-admin.v3.articles-subnav :active="$articleNavigationActive" />
+                </div>
             </div>
             <div class="flex shrink-0 flex-wrap justify-start gap-2 xl:justify-end">
                 @if($isTrashView)
@@ -126,36 +89,6 @@
             </div>
         </div>
         @else
-        <section class="mb-8" aria-labelledby="content-workbench-heading">
-            <h2 id="content-workbench-heading" class="sr-only">{{ __('admin.articles.workbench.title') }}</h2>
-            <div class="rounded-lg border border-blue-100 bg-white p-4 shadow-sm">
-                <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                    <div class="flex items-start gap-3">
-                        <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-md ring-1 {{ $workbenchHasPriority ? $workbenchPriority['iconClass'] : 'bg-blue-50 text-blue-600 ring-blue-100' }}">
-                            <i data-lucide="{{ $workbenchHasPriority ? $workbenchPriority['icon'] : 'circle-check' }}" class="h-5 w-5"></i>
-                        </div>
-                        <div>
-                            <p class="text-xs font-semibold uppercase tracking-wide text-blue-600">{{ __('admin.articles.workbench.current_action_title') }}</p>
-                            <h3 class="mt-1 text-base font-semibold text-gray-900">
-                                @if($workbenchHasPriority)
-                                    {{ __('admin.articles.workbench.current_action_desc', ['count' => (int) $workbenchPriority['count'], 'stage' => $workbenchPriority['title']]) }}
-                                @else
-                                    {{ __('admin.articles.workbench.current_action_empty_title') }}
-                                @endif
-                            </h3>
-                            <p class="mt-1 text-sm leading-6 text-gray-500">
-                                {{ $workbenchHasPriority ? __('admin.articles.workbench.current_action_help') : __('admin.articles.workbench.current_action_empty_desc') }}
-                            </p>
-                        </div>
-                    </div>
-                    <a href="{{ $workbenchHasPriority ? $workbenchPriority['href'] : route('admin.tasks.create') }}" class="inline-flex h-9 w-fit shrink-0 items-center rounded-md bg-blue-600 px-3 text-sm font-semibold text-white hover:bg-blue-700">
-                        {{ $workbenchHasPriority ? __('admin.articles.workbench.current_action_button') : __('admin.articles.workbench.current_action_empty_button') }}
-                        <i data-lucide="arrow-right" class="ml-1.5 h-4 w-4"></i>
-                    </a>
-                </div>
-            </div>
-        </section>
-
         <div class="grid grid-cols-1 md:grid-cols-5 gap-6 mb-8">
             <div class="bg-white overflow-hidden shadow rounded-lg">
                 <div class="p-5">
@@ -511,6 +444,11 @@
                                         default => ['label' => __('admin.articles.ai_quality.blocked'), 'class' => 'bg-red-50 text-red-700 ring-red-100', 'icon' => 'shield-x'],
                                     };
                                 }
+                                $aiQualityScore = $aiQualityCheck?->score === null ? null : (int) $aiQualityCheck->score;
+                                $aiQualityAccessibleLabel = $aiQualityPresentation['label'];
+                                if ($aiQualityScore !== null) {
+                                    $aiQualityAccessibleLabel .= ' · '.__('admin.articles.ai_quality.score').' '.$aiQualityScore;
+                                }
                                 $distributionSynced = (int) ($article->distribution_synced_count ?? 0);
                                 $distributionFailed = (int) ($article->distribution_failed_count ?? 0);
                                 $distributionPending = max(0, $distributionTotal - $distributionSynced - $distributionFailed);
@@ -674,11 +612,18 @@
                                     </div>
                                 </td>
                                 <td class="px-4 py-4 whitespace-nowrap">
-                                    <a href="{{ route('admin.articles.edit', ['articleId' => (int) $article->id]).'#ai-quality-result' }}" class="inline-flex max-w-full items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 {{ $aiQualityPresentation['class'] }}">
-                                        <i data-lucide="{{ $aiQualityPresentation['icon'] }}" class="mr-1.5 h-3.5 w-3.5 shrink-0"></i>
-                                        <span class="truncate">{{ $aiQualityPresentation['label'] }}</span>
-                                        @if($aiQualityCheck !== null && $aiQualityCheck->score !== null)
-                                            <span class="ml-1 shrink-0 font-mono">{{ (int) $aiQualityCheck->score }}</span>
+                                    <a
+                                        href="{{ route('admin.articles.edit', ['articleId' => (int) $article->id]).'#ai-quality-result' }}"
+                                        aria-label="{{ $aiQualityAccessibleLabel }}"
+                                        title="{{ $aiQualityAccessibleLabel }}"
+                                        @if($aiQualityScore !== null) data-ai-quality-score-badge="{{ $aiQualityScore }}" @endif
+                                        class="inline-flex max-w-full items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ring-1 {{ $aiQualityPresentation['class'] }}"
+                                    >
+                                        <i data-lucide="{{ $aiQualityPresentation['icon'] }}" aria-hidden="true" class="h-3.5 w-3.5 shrink-0"></i>
+                                        @if($aiQualityScore !== null)
+                                            <span class="shrink-0 font-mono">{{ $aiQualityScore }}</span>
+                                        @else
+                                            <span class="truncate">{{ $aiQualityPresentation['label'] }}</span>
                                         @endif
                                     </a>
                                 </td>
@@ -697,15 +642,15 @@
                                 <td class="py-4 pl-3 pr-4 whitespace-nowrap text-sm font-medium">
                                     @if($isTrashView)
                                         <div class="flex items-center justify-end gap-2">
-                                            <form method="POST" action="{{ route('admin.articles.restore', ['articleId' => (int) $article->id]) }}" class="inline" onsubmit="return confirm(@json(__('admin.articles.trash.confirm_restore')))">
+                                            <form method="POST" action="{{ route('admin.articles.restore', ['articleId' => (int) $article->id]) }}" class="inline" data-admin-confirm-form data-admin-confirm-tone="success" data-admin-confirm-title="{{ __('admin.articles.trash.confirm_restore') }}" data-admin-confirm-message="{{ __('admin.action_dialog.target', ['name' => $article->title]) }}" data-admin-confirm-guidance="{{ __('admin.action_dialog.generic_impact') }}" data-admin-confirm-label="{{ __('admin.articles.trash.action_restore') }}">
                                                 @csrf
-                                                <button type="submit" class="text-green-600 hover:text-green-800" title="{{ __('admin.articles.trash.action_restore') }}">
+                                                <button type="submit" class="text-green-600 hover:text-green-800" title="{{ __('admin.articles.trash.action_restore') }}" data-admin-confirm-submit disabled aria-disabled="true">
                                                     <i data-lucide="rotate-ccw" class="w-4 h-4"></i>
                                                 </button>
                                             </form>
-                                            <form method="POST" action="{{ route('admin.articles.force-delete', ['articleId' => (int) $article->id]) }}" class="inline" onsubmit="return confirm(@json(__('admin.articles.trash.confirm_delete')))">
+                                            <form method="POST" action="{{ route('admin.articles.force-delete', ['articleId' => (int) $article->id]) }}" class="inline" data-admin-confirm-form data-admin-confirm-tone="danger" data-admin-confirm-title="{{ __('admin.articles.trash.confirm_delete') }}" data-admin-confirm-message="{{ __('admin.action_dialog.target', ['name' => $article->title]) }}" data-admin-confirm-guidance="{{ __('admin.action_dialog.generic_impact') }}" data-admin-confirm-label="{{ __('admin.articles.trash.action_force_delete') }}">
                                                 @csrf
-                                                <button type="submit" class="text-red-600 hover:text-red-800" title="{{ __('admin.articles.trash.action_force_delete') }}">
+                                                <button type="submit" class="text-red-600 hover:text-red-800" title="{{ __('admin.articles.trash.action_force_delete') }}" data-admin-confirm-submit disabled aria-disabled="true">
                                                     <i data-lucide="trash-2" class="w-4 h-4"></i>
                                                 </button>
                                             </form>
@@ -797,7 +742,7 @@
             data-request-too-large-message="{{ __('admin.articles.export.errors.request_too_large') }}"
             aria-modal="true"
             aria-labelledby="article-export-dialog-label"
-            class="m-auto max-h-[calc(100dvh-2rem)] w-[min(30rem,calc(100vw-2rem))] overflow-y-auto overscroll-contain rounded-2xl border border-slate-200 bg-white p-0 text-left shadow-2xl backdrop:bg-slate-950/40"
+            class="m-auto max-h-[calc(100dvh-2rem)] w-[min(30rem,calc(100vw-2rem))] overflow-y-auto overscroll-contain rounded-2xl border border-slate-200 bg-white p-0 text-left shadow-[0_24px_72px_rgba(15,23,42,0.28)] backdrop:bg-[rgba(15,23,42,0.48)]"
         >
             <h2 id="article-export-dialog-label" class="sr-only">{{ __('admin.articles.export.dialog_label') }}</h2>
             <div data-export-state="loading" role="status" aria-live="polite" aria-busy="true" class="px-6 py-7 sm:px-8 sm:py-8">
@@ -844,10 +789,10 @@
                     <span data-export-filename class="min-w-0 truncate text-sm font-medium text-slate-700"></span>
                 </div>
                 <div class="mt-6 flex flex-col gap-2 sm:flex-row sm:justify-end">
-                    <button type="button" data-export-close class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
+                    <button type="button" data-export-close class="inline-flex min-h-10 items-center justify-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
                         {{ __('admin.articles.export.close') }}
                     </button>
-                    <button type="button" data-export-retry class="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 active:scale-[0.98]">
+                    <button type="button" data-export-retry class="inline-flex min-h-10 items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 active:scale-[0.98]">
                         <i data-lucide="download" class="mr-2 h-4 w-4"></i>
                         {{ __('admin.articles.export.retry_download') }}
                     </button>
@@ -866,7 +811,7 @@
                     </div>
                 </div>
                 <div class="mt-6 flex justify-end">
-                    <button type="button" data-export-close class="inline-flex items-center justify-center rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 active:scale-[0.98]">
+                    <button type="button" data-export-close class="inline-flex min-h-10 items-center justify-center rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 active:scale-[0.98]">
                         {{ __('admin.articles.export.close') }}
                     </button>
                 </div>
@@ -884,6 +829,31 @@
         const DISTRIBUTION_CHANNEL_FILTER_COUNT_LABEL = @json(__('admin.articles.filters.distribution_channel_selected_count', ['count' => '__COUNT__']));
         const DISTRIBUTION_CHANNEL_FILTER_EXPAND_LABEL = @json(__('admin.articles.filters.distribution_channel_expand'));
         const DISTRIBUTION_CHANNEL_FILTER_COLLAPSE_LABEL = @json(__('admin.articles.filters.distribution_channel_collapse'));
+        const ARTICLE_DIALOG_I18N = {
+            confirm: @json(__('admin.action_dialog.continue')),
+            close: @json(__('admin.action_dialog.close')),
+            guidance: @json(__('admin.action_dialog.generic_impact')),
+            noticeTitle: @json(__('admin.action_dialog.info_title')),
+        };
+
+        function showArticleNotice(message, focusTarget = null) {
+            window.AdminActionDialog?.notice?.({
+                tone: 'info',
+                title: ARTICLE_DIALOG_I18N.noticeTitle,
+                message,
+            });
+            focusTarget?.focus?.({ preventScroll: true });
+        }
+
+        async function confirmArticleAction(title, tone = 'danger', opener = null) {
+            return await window.AdminActionDialog?.confirm?.({
+                title,
+                message: ARTICLE_DIALOG_I18N.guidance,
+                tone,
+                confirmLabel: ARTICLE_DIALOG_I18N.confirm,
+                opener,
+            }) === true;
+        }
 
         function toggleBatchActions() {
             const batchActions = document.getElementById('batch-actions');
@@ -919,8 +889,8 @@
 
         const ARTICLE_BATCH_ROUTES = @json($articleBatchRoutes);
 
-        function submitEmptyTrash() {
-            if (!confirm(TRASH_I18N.confirmEmpty)) {
+        async function submitEmptyTrash() {
+            if (!await confirmArticleAction(TRASH_I18N.confirmEmpty, 'danger', document.activeElement)) {
                 return;
             }
             const form = document.createElement('form');
@@ -957,16 +927,16 @@
             form.submit();
         }
 
-        function deleteArticle(articleId) {
-            if (!confirm(ARTICLES_I18N.confirmDelete)) {
+        async function deleteArticle(articleId) {
+            if (!await confirmArticleAction(ARTICLES_I18N.confirmDelete, 'danger', document.activeElement)) {
                 return;
             }
             submitAction('delete_articles', articleId);
         }
 
-        function quickReview(articleId, status) {
+        async function quickReview(articleId, status) {
             const actionText = status === 'approved' ? ARTICLES_I18N.reviewApproved : ARTICLES_I18N.reviewRejected;
-            if (!confirm(ARTICLES_I18N.confirmQuickReview.replace('__ACTION__', actionText))) {
+            if (!await confirmArticleAction(ARTICLES_I18N.confirmQuickReview.replace('__ACTION__', actionText), 'info', document.activeElement)) {
                 return;
             }
             submitAction('batch_update_review', articleId, { review_status: status });
@@ -1055,53 +1025,50 @@
 
             const batchForm = document.getElementById('batch-form');
             if (batchForm) {
-                batchForm.addEventListener('submit', function(event) {
+                batchForm.addEventListener('submit', async function(event) {
+                    if (batchForm.dataset.articleBatchConfirmed === 'true') {
+                        delete batchForm.dataset.articleBatchConfirmed;
+                        return;
+                    }
+                    event.preventDefault();
                     const selected = document.querySelectorAll('.article-checkbox:checked');
                     if (selected.length === 0) {
-                        event.preventDefault();
-                        alert(IS_TRASH_VIEW ? TRASH_I18N.alertSelect : ARTICLES_I18N.selectArticles);
+                        showArticleNotice(IS_TRASH_VIEW ? TRASH_I18N.alertSelect : ARTICLES_I18N.selectArticles, document.getElementById('select-all'));
                         return;
                     }
 
                     const action = document.getElementById('batch-action')?.value ?? '';
                     if (action === '') {
-                        event.preventDefault();
-                        alert(ARTICLES_I18N.selectAction);
+                        showArticleNotice(ARTICLES_I18N.selectAction, document.getElementById('batch-action'));
                         return;
                     }
 
                     const targetAction = ARTICLE_BATCH_ROUTES[action] ?? '';
                     if (targetAction === '') {
-                        event.preventDefault();
-                        alert(ARTICLES_I18N.selectAction);
+                        showArticleNotice(ARTICLES_I18N.selectAction, document.getElementById('batch-action'));
                         return;
                     }
                     batchForm.action = targetAction;
 
                     if (IS_TRASH_VIEW) {
-                        if (action === 'batch_restore' && !confirm(TRASH_I18N.confirmBatchRestore.replace('__COUNT__', String(selected.length)))) {
-                            event.preventDefault();
+                        if (action === 'batch_restore' && !await confirmArticleAction(TRASH_I18N.confirmBatchRestore.replace('__COUNT__', String(selected.length)), 'success', event.submitter)) {
                             return;
                         }
-                        if (action === 'batch_force_delete' && !confirm(TRASH_I18N.confirmBatchForceDelete.replace('__COUNT__', String(selected.length)))) {
-                            event.preventDefault();
+                        if (action === 'batch_force_delete' && !await confirmArticleAction(TRASH_I18N.confirmBatchForceDelete.replace('__COUNT__', String(selected.length)), 'danger', event.submitter)) {
                             return;
                         }
                     } else {
                     if (action === 'batch_update_status' && !(document.getElementById('status-select')?.value ?? '')) {
-                        event.preventDefault();
-                        alert(ARTICLES_I18N.selectStatus);
+                        showArticleNotice(ARTICLES_I18N.selectStatus, document.getElementById('status-select'));
                         return;
                     }
 
                     if (action === 'batch_update_review' && !(document.getElementById('review-select')?.value ?? '')) {
-                        event.preventDefault();
-                        alert(ARTICLES_I18N.selectReview);
+                        showArticleNotice(ARTICLES_I18N.selectReview, document.getElementById('review-select'));
                         return;
                     }
 
-                    if (action === 'delete_articles' && !confirm(ARTICLES_I18N.confirmDeleteSelected.replace('__COUNT__', selected.length))) {
-                        event.preventDefault();
+                    if (action === 'delete_articles' && !await confirmArticleAction(ARTICLES_I18N.confirmDeleteSelected.replace('__COUNT__', selected.length), 'danger', event.submitter)) {
                         return;
                     }
                     }
@@ -1118,6 +1085,8 @@
                         input.value = checkbox.value;
                         selectedIdsContainer.appendChild(input);
                     });
+                    batchForm.dataset.articleBatchConfirmed = 'true';
+                    batchForm.requestSubmit(event.submitter instanceof HTMLButtonElement ? event.submitter : undefined);
                 });
             }
         });

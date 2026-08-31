@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Exceptions\ApiException;
 use App\Exceptions\ArticleAiQualityGateException;
 use App\Exceptions\ArticleRiskGateException;
 use App\Http\Controllers\Controller;
@@ -18,16 +19,25 @@ use App\Models\Prompt;
 use App\Models\Task;
 use App\Models\Title;
 use App\Models\TitleLibrary;
+use App\Services\GeoFlow\AiQualityAuditService;
+use App\Services\GeoFlow\AiQualityRetrievalReadinessService;
+use App\Services\GeoFlow\ArticleAiOptimizationCoordinator;
+use App\Services\GeoFlow\ArticleAiQualityConfigurationService;
 use App\Services\GeoFlow\ArticleAiQualityGate;
 use App\Services\GeoFlow\ArticleAiQualityInspectionService;
 use App\Services\GeoFlow\ArticleAiQualityInvalidationService;
+use App\Services\GeoFlow\ArticleCitationMarkerCleaner;
+use App\Services\GeoFlow\ArticleGeoFlowService;
 use App\Services\GeoFlow\ArticleMarkdownExportService;
 use App\Services\GeoFlow\ArticleRiskScanner;
 use App\Services\GeoFlow\ArticleWorkflowTransitionService;
 use App\Services\GeoFlow\DistributionOrchestrator;
 use App\Services\HostedSites\HostedSiteArticleFingerprintService;
+use App\Support\Admin\ArticleAiQualityProgressPresenter;
 use App\Support\AdminWeb;
+use App\Support\GeoFlow\AiQualityRetrievalMode;
 use App\Support\GeoFlow\ArticleWorkflow;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -52,6 +62,8 @@ use Throwable;
  */
 class ArticleController extends Controller
 {
+    private const MAX_BATCH_DELETE_ARTICLES = 500;
+
     public function __construct(
         private readonly DistributionOrchestrator $distributionOrchestrator,
         private readonly ArticleRiskScanner $articleRiskScanner,
@@ -61,6 +73,13 @@ class ArticleController extends Controller
         private readonly ArticleAiQualityInspectionService $articleAiQualityInspectionService,
         private readonly ArticleAiQualityInvalidationService $articleAiQualityInvalidationService,
         private readonly ArticleAiQualityGate $articleAiQualityGate,
+        private readonly ArticleAiQualityProgressPresenter $articleAiQualityProgressPresenter,
+        private readonly ArticleCitationMarkerCleaner $articleCitationMarkerCleaner,
+        private readonly ArticleAiOptimizationCoordinator $articleAiOptimizationCoordinator,
+        private readonly ArticleAiQualityConfigurationService $articleAiQualityConfigurationService,
+        private readonly AiQualityRetrievalReadinessService $aiQualityRetrievalReadinessService,
+        private readonly AiQualityAuditService $aiQualityAuditService,
+        private readonly ArticleGeoFlowService $articleGeoFlowService,
     ) {}
 
     /**
@@ -140,7 +159,7 @@ class ArticleController extends Controller
         }
 
         try {
-            return $this->handleBatchDelete($articleIds);
+            return $this->handleBatchDelete($articleIds, $this->authenticatedAdminId($request));
         } catch (Throwable $e) {
             return back()->withErrors($e->getMessage());
         }
@@ -275,15 +294,34 @@ class ArticleController extends Controller
         }
 
         try {
-            $articles = Article::onlyTrashed()->whereIn('id', $articleIds)->get();
-            foreach ($articles as $article) {
-                $article->restore();
-                $this->articleAiQualityInvalidationService->invalidateArticle(
-                    $article,
-                    'article_restored',
-                );
-            }
-            $count = $articles->count();
+            $adminId = $this->authenticatedAdminId($request);
+            $count = DB::transaction(function () use ($articleIds, $adminId): int {
+                $articles = Article::onlyTrashed()
+                    ->whereIn('id', $articleIds)
+                    ->orderBy('id')
+                    ->lockForUpdate()
+                    ->get();
+
+                foreach ($articles as $article) {
+                    $article->restore();
+                    $article->forceFill([
+                        'ai_quality_policy_version' => max(1, (int) $article->ai_quality_policy_version) + 1,
+                    ])->save();
+                    $this->aiQualityAuditService->record('article_restored', [
+                        'article_id' => (int) $article->id,
+                        'task_id' => $article->task_id ? (int) $article->task_id : null,
+                        'admin_id' => $adminId,
+                        'policy_version' => (int) $article->ai_quality_policy_version,
+                        'reason_code' => 'article_soft_restored',
+                    ]);
+                    $this->articleAiQualityInvalidationService->invalidateArticle(
+                        $article,
+                        'article_restored',
+                    );
+                }
+
+                return $articles->count();
+            });
 
             return back()->with('message', __('admin.articles.trash.message.restore_success', ['count' => $count]));
         } catch (Throwable $e) {
@@ -296,20 +334,35 @@ class ArticleController extends Controller
      */
     public function batchForceDelete(Request $request): RedirectResponse
     {
+        $request->validate([
+            'article_ids' => ['array', 'max:'.self::MAX_BATCH_DELETE_ARTICLES],
+            'article_ids.*' => ['bail', 'integer', 'min:1', 'distinct'],
+        ]);
+
         $articleIds = $this->extractArticleIds($request);
         if (empty($articleIds)) {
             return back()->withErrors(__('admin.articles.message.select_articles'));
         }
 
         try {
-            $models = Article::onlyTrashed()->whereIn('id', $articleIds)->get();
-            $models->each(function (Article $article): void {
-                $article->forceDelete();
+            $count = DB::transaction(function () use ($articleIds): int {
+                $models = Article::onlyTrashed()
+                    ->whereIn('id', $articleIds)
+                    ->orderBy('id')
+                    ->lockForUpdate()
+                    ->get();
+                $models->each(function (Article $article): void {
+                    $article->forceDelete();
+                });
+
+                return $models->count();
             });
 
-            return back()->with('message', __('admin.articles.trash.message.delete_success', ['count' => $models->count()]));
+            return back()->with('message', __('admin.articles.trash.message.delete_success', ['count' => $count]));
         } catch (Throwable $e) {
-            return back()->withErrors(__('admin.articles.trash.message.delete_failed', ['message' => $e->getMessage()]));
+            report($e);
+
+            return back()->withErrors(__('admin.articles.message.delete_failed_refresh'));
         }
     }
 
@@ -319,32 +372,49 @@ class ArticleController extends Controller
     public function emptyTrash(): RedirectResponse
     {
         try {
-            $models = Article::onlyTrashed()->get();
-            if ($models->isEmpty()) {
+            $total = DB::transaction(
+                static fn (): int => (int) Article::onlyTrashed()->forceDelete(),
+            );
+
+            if ($total === 0) {
                 return back()->with('message', __('admin.articles.trash.message.empty_already'));
             }
-            $total = $models->count();
-            $models->each(function (Article $article): void {
-                $article->forceDelete();
-            });
 
             return back()->with('message', __('admin.articles.trash.message.empty_success', ['count' => $total]));
         } catch (Throwable $e) {
-            return back()->withErrors(__('admin.articles.trash.message.empty_failed', ['message' => $e->getMessage()]));
+            report($e);
+
+            return back()->withErrors(__('admin.articles.message.delete_failed_refresh'));
         }
     }
 
     /**
      * 恢复单篇已删除文章。
      */
-    public function restore(int $articleId): RedirectResponse
+    public function restore(Request $request, int $articleId): RedirectResponse
     {
-        $article = Article::onlyTrashed()->whereKey($articleId)->firstOrFail();
-        $article->restore();
-        $this->articleAiQualityInvalidationService->invalidateArticle(
-            $article,
-            'article_restored',
-        );
+        $adminId = $this->authenticatedAdminId($request);
+        DB::transaction(function () use ($articleId, $adminId): void {
+            $article = Article::onlyTrashed()
+                ->whereKey($articleId)
+                ->lockForUpdate()
+                ->firstOrFail();
+            $article->restore();
+            $article->forceFill([
+                'ai_quality_policy_version' => max(1, (int) $article->ai_quality_policy_version) + 1,
+            ])->save();
+            $this->aiQualityAuditService->record('article_restored', [
+                'article_id' => (int) $article->id,
+                'task_id' => $article->task_id ? (int) $article->task_id : null,
+                'admin_id' => $adminId,
+                'policy_version' => (int) $article->ai_quality_policy_version,
+                'reason_code' => 'article_soft_restored',
+            ]);
+            $this->articleAiQualityInvalidationService->invalidateArticle(
+                $article,
+                'article_restored',
+            );
+        });
 
         return back()->with('message', __('admin.articles.trash.message.restore_success', ['count' => 1]));
     }
@@ -354,8 +424,21 @@ class ArticleController extends Controller
      */
     public function forceDelete(int $articleId): RedirectResponse
     {
-        $article = Article::onlyTrashed()->whereKey($articleId)->firstOrFail();
-        $article->forceDelete();
+        try {
+            DB::transaction(function () use ($articleId): void {
+                $article = Article::onlyTrashed()
+                    ->whereKey($articleId)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+                $article->forceDelete();
+            });
+        } catch (ModelNotFoundException $e) {
+            throw $e;
+        } catch (Throwable $e) {
+            report($e);
+
+            return back()->withErrors(__('admin.articles.message.delete_failed_refresh'));
+        }
 
         return back()->with('message', __('admin.articles.trash.message.delete_success', ['count' => 1]));
     }
@@ -476,7 +559,10 @@ class ArticleController extends Controller
     {
         $article = Article::query()
             ->with([
-                'task:id,name,ai_quality_enabled',
+                'task:id,name,ai_quality_enabled,ai_model_id,knowledge_base_id,ai_quality_retrieval_mode',
+                'task.knowledgeBases:id,name',
+                'task.distributionChannels:id,channel_type',
+                'aiQualityKnowledgeBases:id,name',
                 'author:id,name',
                 'category:id,name',
                 'latestAiQualityCheck.prompt:id,name',
@@ -484,6 +570,9 @@ class ArticleController extends Controller
             ])
             ->whereKey($articleId)
             ->firstOrFail();
+
+        $aiQualityCheck = $article->latestAiQualityCheck;
+        $qualityRetrieval = $this->articleAiQualityRetrievalViewData($request, $article);
 
         return view('admin.articles.form', [
             'pageTitle' => __('admin.article_edit.page_title'),
@@ -506,11 +595,15 @@ class ArticleController extends Controller
                 'task_name' => (string) ($article->task->name ?? ''),
                 'ai_quality_enabled' => (bool) $article->ai_quality_required_at_creation
                     || (bool) ($article->task->ai_quality_enabled ?? false),
+                'ai_quality_retrieval_mode_override' => (string) ($article->ai_quality_retrieval_mode_override ?? ''),
                 'is_hot' => (bool) ($article->is_hot ?? false),
                 'is_featured' => (bool) ($article->is_featured ?? false),
+                'is_ai_generated' => (bool) ($article->is_ai_generated ?? false),
             ],
             'riskScan' => $this->riskScanViewData($article),
-            'aiQualityCheck' => $article->latestAiQualityCheck,
+            'aiQualityCheck' => $aiQualityCheck,
+            'aiQualityProgress' => $this->articleAiQualityProgressPresenter->snapshot($aiQualityCheck),
+            'aiOptimization' => $this->articleAiOptimizationCoordinator->statusForArticle($article),
             'aiQualityHistory' => $article->aiQualityChecks()
                 ->with(['prompt:id,name', 'aiModel:id,name'])
                 ->latest('id')
@@ -518,6 +611,7 @@ class ArticleController extends Controller
                 ->get(),
             'formOptions' => $this->loadFormOptions(false),
             'canCreateManualPublication' => $this->canCreateManualPublication($request),
+            'aiQualityRetrieval' => $qualityRetrieval,
         ]);
     }
 
@@ -580,6 +674,7 @@ class ArticleController extends Controller
                 $article,
                 trigger: 'admin_manual',
                 auditAdminId: $this->authenticatedAdminId($request),
+                rejectWhenOptimizationActive: true,
             );
 
             return redirect()
@@ -594,9 +689,41 @@ class ArticleController extends Controller
         }
     }
 
+    /**
+     * 返回当前文章最新 AI 质检的真实执行进度。
+     */
+    public function aiQualityStatus(int $articleId): JsonResponse
+    {
+        $article = Article::query()
+            ->with('latestAiQualityCheck')
+            ->whereKey($articleId)
+            ->firstOrFail();
+
+        $snapshot = $this->articleAiQualityProgressPresenter->snapshot($article->latestAiQualityCheck);
+        $snapshot['optimization'] = $this->articleAiOptimizationCoordinator->statusForArticle($article);
+
+        return response()
+            ->json($snapshot)
+            ->header('Cache-Control', 'no-cache, private, no-store, max-age=0, must-revalidate');
+    }
+
+    public function retryAiQualityWorkflow(int $articleId): RedirectResponse
+    {
+        $article = Article::query()->with('latestAiQualityCheck')->whereKey($articleId)->firstOrFail();
+        $check = $article->latestAiQualityCheck;
+        if (! $check || ! $this->articleAiQualityInspectionService->retryCompletedWorkflow($check)) {
+            return back()->withErrors(__('admin.articles.ai_quality.workflow_retry_unavailable'));
+        }
+
+        return redirect()
+            ->route('admin.articles.edit', ['articleId' => $articleId])
+            ->with('message', __('admin.articles.ai_quality.workflow_retry_started'));
+    }
+
     private function aiQualityRequestFailureMessage(Throwable $exception): string
     {
         return match ($exception->getMessage()) {
+            'article_ai_optimization_recheck_conflict' => __('admin.articles.ai_quality.recheck_optimization_conflict'),
             'ai_quality_knowledge_unavailable' => __('admin.articles.ai_quality.manual_unavailable_knowledge'),
             'ai_quality_prompt_unavailable' => __('admin.articles.ai_quality.manual_unavailable_prompt'),
             'ai_quality_model_unavailable' => __('admin.articles.ai_quality.manual_unavailable_model'),
@@ -612,20 +739,27 @@ class ArticleController extends Controller
         $validated = $request->validate([
             'ai_quality_override_reason' => ['required', 'string', 'min:4', 'max:1000'],
         ]);
-        $article = Article::query()->whereKey($articleId)->firstOrFail();
-
         try {
-            $this->articleAiQualityGate->check(
-                $article,
-                'admin_ai_quality_override',
-                $this->authenticatedAdminId($request),
+            $this->articleGeoFlowService->overrideAiQuality(
+                $articleId,
                 (string) $validated['ai_quality_override_reason'],
-                true,
+                $this->authenticatedAdminId($request),
             );
 
             return redirect()
                 ->route('admin.articles.edit', ['articleId' => $articleId])
                 ->with('message', __('admin.articles.ai_quality.override_success'));
+        } catch (ApiException $exception) {
+            if ($exception->getErrorCode() === 'forbidden') {
+                $this->aiQualityAuditService->record('article_quality_decision_authorization_denied', [
+                    'article_id' => $articleId,
+                    'admin_id' => $this->authenticatedAdminId($request),
+                    'authorization_result' => 'denied',
+                    'reason_code' => (string) ($exception->getDetails()['reason_code'] ?? 'quality_decision_permission_required'),
+                ]);
+            }
+
+            return back()->withInput()->withErrors($exception->getMessage());
         } catch (ArticleAiQualityGateException $exception) {
             return back()->withInput()->withErrors($exception->getMessage());
         }
@@ -637,8 +771,9 @@ class ArticleController extends Controller
     public function update(Request $request, int $articleId): RedirectResponse
     {
         $runAiQualityAfterSave = $request->boolean('run_ai_quality_after_save');
-        $payload = $this->validateArticleForm($request, true);
         $article = Article::query()->whereKey($articleId)->firstOrFail();
+        $payload = $this->validateArticleForm($request, true, (bool) $article->is_ai_generated);
+        $canManageProtectedWorkflows = $request->user('admin')?->canManageProtectedWorkflows() === true;
 
         $workflowState = ArticleWorkflow::normalizeState(
             $payload['status'],
@@ -648,7 +783,7 @@ class ArticleController extends Controller
 
         try {
             $adminId = $this->authenticatedAdminId($request);
-            $gateRejection = DB::transaction(function () use (&$article, $payload, $workflowState, $adminId, $runAiQualityAfterSave): ArticleRiskGateException|ArticleAiQualityGateException|null {
+            $gateRejection = DB::transaction(function () use (&$article, $payload, $workflowState, $adminId, $runAiQualityAfterSave, $canManageProtectedWorkflows): ArticleRiskGateException|ArticleAiQualityGateException|null {
                 $lockedArticle = Article::query()->whereKey($article->id)->lockForUpdate()->firstOrFail();
                 $slug = $payload['title'] === $lockedArticle->title
                     ? $lockedArticle->slug
@@ -697,7 +832,64 @@ class ArticleController extends Controller
                     'published_at' => $preservePublishedWorkflow ? $lockedArticle->published_at : null,
                     'is_hot' => (bool) ($payload['is_hot'] ?? false),
                     'is_featured' => (bool) ($payload['is_featured'] ?? false),
+                    'ai_quality_policy_version' => $contentChanged
+                        ? max(1, (int) $lockedArticle->ai_quality_policy_version) + 1
+                        : max(1, (int) $lockedArticle->ai_quality_policy_version),
                 ])->save();
+
+                if (array_key_exists('ai_quality_retrieval_mode_override', $payload)
+                    || array_key_exists('ai_quality_knowledge_base_ids', $payload)) {
+                    if ((int) $lockedArticle->task_id > 0
+                        && ! $canManageProtectedWorkflows
+                        && Task::query()
+                            ->whereKey((int) $lockedArticle->task_id)
+                            ->whereHas('distributionChannels', static fn ($query) => $query->where(
+                                'channel_type',
+                                DistributionChannel::TYPE_HOSTED_SITE,
+                            ))
+                            ->exists()) {
+                        throw ValidationException::withMessages([
+                            'ai_quality_retrieval_mode_override' => '当前账号无权修改托管任务文章的质检方式。',
+                        ]);
+                    }
+
+                    $beforeConfigurationHash = hash('sha256', json_encode([
+                        'mode' => $lockedArticle->ai_quality_retrieval_mode_override,
+                        'knowledge_base_ids' => $this->articleAiQualityConfigurationService
+                            ->effectiveKnowledgeBaseIds($lockedArticle),
+                    ], JSON_THROW_ON_ERROR));
+                    $configurationChanged = $this->articleAiQualityConfigurationService->apply(
+                        $lockedArticle,
+                        array_key_exists('ai_quality_retrieval_mode_override', $payload)
+                            ? $payload['ai_quality_retrieval_mode_override']
+                            : $lockedArticle->ai_quality_retrieval_mode_override,
+                        array_key_exists('ai_quality_knowledge_base_ids', $payload)
+                            ? $payload['ai_quality_knowledge_base_ids']
+                            : null,
+                    );
+                    if ($configurationChanged) {
+                        $afterConfigurationHash = hash('sha256', json_encode([
+                            'mode' => $lockedArticle->fresh()->ai_quality_retrieval_mode_override,
+                            'knowledge_base_ids' => $this->articleAiQualityConfigurationService
+                                ->effectiveKnowledgeBaseIds($lockedArticle),
+                        ], JSON_THROW_ON_ERROR));
+                        $this->aiQualityAuditService->record('article_quality_configuration_changed', [
+                            'article_id' => (int) $lockedArticle->id,
+                            'task_id' => $lockedArticle->task_id ? (int) $lockedArticle->task_id : null,
+                            'admin_id' => $adminId,
+                            'policy_version' => (int) $lockedArticle->fresh()->ai_quality_policy_version,
+                            'before_hash' => $beforeConfigurationHash,
+                            'after_hash' => $afterConfigurationHash,
+                            'metadata' => [
+                                'retrieval_mode' => (string) ($lockedArticle->fresh()->ai_quality_retrieval_mode_override ?? ''),
+                            ],
+                        ]);
+                        $this->articleAiQualityInvalidationService->invalidateArticle(
+                            $lockedArticle,
+                            'article_quality_configuration_changed',
+                        );
+                    }
+                }
 
                 if ($contentChanged) {
                     $this->articleAiQualityInvalidationService->invalidateArticle(
@@ -750,6 +942,7 @@ class ArticleController extends Controller
                         trigger: 'admin_manual',
                         auditAdminId: $adminId,
                         requestedWorkflowState: $workflowState,
+                        rejectWhenOptimizationActive: true,
                     );
                 } catch (Throwable $exception) {
                     report($exception);
@@ -780,6 +973,45 @@ class ArticleController extends Controller
         return redirect()
             ->route('admin.articles.edit', ['articleId' => $articleId])
             ->with('message', __('admin.article_edit.message.update_success'));
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function articleAiQualityRetrievalViewData(Request $request, Article $article): array
+    {
+        $attachedToTask = $article->task instanceof Task;
+        $selectedIds = $this->articleAiQualityConfigurationService->effectiveKnowledgeBaseIds($article);
+        $knowledgeBases = KnowledgeBase::query()
+            ->select(['id', 'name'])
+            ->orderBy('name')
+            ->get()
+            ->map(static fn (KnowledgeBase $knowledgeBase): array => [
+                'id' => (int) $knowledgeBase->id,
+                'name' => (string) $knowledgeBase->name,
+            ])
+            ->all();
+        $readiness = $this->aiQualityRetrievalReadinessService->inspect(array_column($knowledgeBases, 'id'));
+        $readinessByKnowledgeBase = collect($readiness['knowledge_bases'] ?? [])
+            ->mapWithKeys(static fn (array $row): array => [(string) $row['id'] => $row])
+            ->all();
+        $selectedReadiness = $this->aiQualityRetrievalReadinessService->inspect($selectedIds);
+        $override = (string) ($article->ai_quality_retrieval_mode_override ?? '');
+        if (! $attachedToTask && ! AiQualityRetrievalMode::isValid($override)) {
+            $override = (string) ($selectedReadiness['highest_available_mode'] ?? '');
+        }
+        $hostedTask = $attachedToTask && $article->task->distributionChannels
+            ->contains(static fn (DistributionChannel $channel): bool => $channel->isHostedSite());
+
+        return [
+            'attached_to_task' => $attachedToTask,
+            'selected_knowledge_base_ids' => $selectedIds,
+            'knowledge_bases' => $knowledgeBases,
+            'readiness_by_knowledge_base' => $readinessByKnowledgeBase,
+            'value' => $override,
+            'inherited_mode' => (string) ($article->task?->ai_quality_retrieval_mode ?: AiQualityRetrievalMode::legacyDefault()),
+            'can_edit' => ! $hostedTask || $request->user('admin')?->canManageProtectedWorkflows() === true,
+        ];
     }
 
     /**
@@ -1219,11 +1451,11 @@ class ArticleController extends Controller
      *     is_ai_generated: bool
      * }
      */
-    private function validateArticleForm(Request $request, bool $isEdit): array
+    private function validateArticleForm(Request $request, bool $isEdit, bool $cleanAiGenerated = false): array
     {
         $keyPrefix = $isEdit ? 'admin.article_edit.error' : 'admin.article_create.error';
 
-        return $request->validate([
+        $validated = $request->validate([
             'title' => ['required', 'string', 'max:500'],
             'excerpt' => ['nullable', 'string', 'max:'.ArticleRiskScanner::MAX_EXCERPT_CHARACTERS],
             'content' => ['required', 'string', 'max:'.ArticleRiskScanner::MAX_CONTENT_CHARACTERS],
@@ -1238,6 +1470,9 @@ class ArticleController extends Controller
             'is_featured' => ['nullable', 'boolean'],
             'source_title_id' => ['nullable', 'integer', 'min:1', 'exists:titles,id'],
             'is_ai_generated' => ['nullable', 'boolean'],
+            'ai_quality_retrieval_mode_override' => ['nullable', 'string', 'in:'.implode(',', AiQualityRetrievalMode::values())],
+            'ai_quality_knowledge_base_ids' => ['nullable', 'array', 'max:5'],
+            'ai_quality_knowledge_base_ids.*' => ['integer', 'min:1', 'distinct', 'exists:knowledge_bases,id'],
         ], [
             'title.required' => __($keyPrefix.'.title_required'),
             'content.required' => __($keyPrefix.'.content_required'),
@@ -1246,6 +1481,17 @@ class ArticleController extends Controller
             'author_id.required' => __($keyPrefix.'.author_required'),
             'author_id.min' => __($keyPrefix.'.author_required'),
         ]);
+
+        if ($cleanAiGenerated || (bool) ($validated['is_ai_generated'] ?? false)) {
+            $validated = $this->articleCitationMarkerCleaner->cleanArticleFields($validated);
+            if (trim((string) $validated['content']) === '') {
+                throw ValidationException::withMessages([
+                    'content' => __($keyPrefix.'.content_required'),
+                ]);
+            }
+        }
+
+        return $validated;
     }
 
     /**
@@ -1471,13 +1717,29 @@ class ArticleController extends Controller
     /**
      * @param  array<int, int>  $articleIds
      */
-    private function handleBatchDelete(array $articleIds): RedirectResponse
+    private function handleBatchDelete(array $articleIds, int $adminId): RedirectResponse
     {
-        $articles = Article::query()->whereIn('id', $articleIds)->get();
-        foreach ($articles as $article) {
-            Article::query()->whereKey((int) $article->id)->delete();
-            $this->articleAiQualityInvalidationService->cancelArticle($article);
-        }
+        DB::transaction(function () use ($articleIds, $adminId): void {
+            $articles = Article::query()
+                ->whereIn('id', $articleIds)
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get();
+            foreach ($articles as $article) {
+                $article->forceFill([
+                    'ai_quality_policy_version' => max(1, (int) $article->ai_quality_policy_version) + 1,
+                ])->save();
+                $this->aiQualityAuditService->record('article_deleted', [
+                    'article_id' => (int) $article->id,
+                    'task_id' => $article->task_id ? (int) $article->task_id : null,
+                    'admin_id' => $adminId,
+                    'policy_version' => (int) $article->ai_quality_policy_version,
+                    'reason_code' => 'article_soft_deleted',
+                ]);
+                $article->delete();
+                $this->articleAiQualityInvalidationService->cancelArticle($article);
+            }
+        });
 
         return back()->with('message', __('admin.articles.message.batch_delete_success', ['count' => count($articleIds)]));
     }

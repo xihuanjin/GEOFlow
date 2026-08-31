@@ -479,6 +479,11 @@ if (assistantRoot) {
                 const event = parseSseBlock(block);
                 if (event === '[DONE]') {
                     doneReceived = true;
+                } else if (event?.type === 'article_content_replacement' && typeof event.content === 'string') {
+                    generationContent = event.content;
+                    aiGeneratedInput.value = '1';
+                    scheduleEditorValue(generationContent);
+                    setGenerationStatus('streaming', messages.streaming, generationContent.length);
                 } else if (event?.type === 'text_delta' && typeof event.delta === 'string') {
                     generationContent += event.delta;
                     aiGeneratedInput.value = '1';
@@ -527,8 +532,14 @@ if (assistantRoot) {
         }
 
         const currentContent = getEditorValue();
-        if (currentContent.trim() !== '' && !window.confirm(messages.replaceConfirm || '')) {
-            return;
+        if (currentContent.trim() !== '') {
+            const confirmed = await window.AdminActionDialog?.confirm?.({
+                title: messages.replaceConfirm || '',
+                message: messages.replaceConfirm || '',
+                tone: 'warning',
+                opener: generateButton,
+            });
+            if (confirmed !== true) return;
         }
 
         saveAssistantPreference();

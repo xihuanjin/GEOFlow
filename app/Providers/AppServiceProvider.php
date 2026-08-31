@@ -3,20 +3,25 @@
 namespace App\Providers;
 
 use App\Contracts\AiWorkspace\AdminHelpResponder;
+use App\Contracts\ArticleAiOptimizationRefiner;
 use App\Contracts\ArticleAiQualityReviewer;
 use App\Contracts\Outbound\HostResolver;
 use App\Contracts\Outbound\OutboundTransport;
 use App\Contracts\SystemUpdater\AgentClient;
 use App\Http\ApiAuthContext;
+use App\Jobs\GenerateKnowledgeFactBatchJob;
 use App\Jobs\ProcessTitleGenerationBatchJob;
 use App\Models\Admin;
+use App\Models\KnowledgeFactGenerationRun;
 use App\Services\Admin\AdminUpdateMetadataService;
 use App\Services\Admin\AdminWelcomeModalService;
 use App\Services\AiWorkspace\AiWorkspaceModelRuntime;
 use App\Services\GeoFlow\AnonymousUsageTelemetry;
+use App\Services\GeoFlow\ArticleAiQualityWorkerLiveness;
 use App\Services\GeoFlow\ArticleGeoFlowService;
 use App\Services\GeoFlow\HorizonMetricsAdapter;
 use App\Services\GeoFlow\JobQueueService;
+use App\Services\GeoFlow\LaravelArticleAiOptimizationRefiner;
 use App\Services\GeoFlow\LaravelArticleAiQualityReviewer;
 use App\Services\GeoFlow\TaskLifecycleService;
 use App\Services\GeoFlow\TaskMonitoringQueryService;
@@ -35,7 +40,11 @@ use GuzzleHttp\Utils;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Request;
+use Illuminate\Queue\Events\Looping;
+use Illuminate\Queue\Events\WorkerStarting;
+use Illuminate\Queue\Events\WorkerStopping;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Facades\View;
@@ -53,6 +62,7 @@ class AppServiceProvider extends ServiceProvider
 
         $this->app->bind(HostResolver::class, SystemHostResolver::class);
         $this->app->bind(ArticleAiQualityReviewer::class, LaravelArticleAiQualityReviewer::class);
+        $this->app->bind(ArticleAiOptimizationRefiner::class, LaravelArticleAiOptimizationRefiner::class);
         $this->app->bind(AgentClient::class, UnixSocketAgentClient::class);
         $this->app->singleton(FinalOutboundSecurityPolicy::class);
         $this->app->bind(OutboundTransport::class, function () use ($fixedContextCapability): LaravelPinnedOutboundTransport {
@@ -94,6 +104,15 @@ class AppServiceProvider extends ServiceProvider
         }
 
         $this->assertHostedSiteConfiguration();
+        Event::listen(WorkerStarting::class, function (WorkerStarting $event): void {
+            app(ArticleAiQualityWorkerLiveness::class)->record((string) $event->connectionName, (string) $event->queue);
+        });
+        Event::listen(Looping::class, function (Looping $event): void {
+            app(ArticleAiQualityWorkerLiveness::class)->record((string) $event->connectionName, (string) $event->queue);
+        });
+        Event::listen(WorkerStopping::class, function (): void {
+            app(ArticleAiQualityWorkerLiveness::class)->removeCurrentProcess();
+        });
         RateLimiter::for('admin-login', function (Request $request): Limit {
             return Limit::perMinute(30)->by('admin-login-ip:'.$request->ip());
         });
@@ -177,6 +196,12 @@ class AppServiceProvider extends ServiceProvider
             return Limit::perMinute((int) config('geoflow.title_ai_rate_per_minute', 30))
                 ->by('title-generation:model:'.$job->aiModelId);
         });
+        RateLimiter::for('knowledge-fact-generation', function (GenerateKnowledgeFactBatchJob $job): Limit {
+            $modelId = (int) KnowledgeFactGenerationRun::query()->whereKey($job->runId)->value('ai_model_id');
+
+            return Limit::perMinute((int) config('geoflow.knowledge_fact_generation_rate_per_minute', 10))
+                ->by('knowledge-fact-generation:model:'.$modelId);
+        });
         RateLimiter::for('title-generation-submissions', function (Request $request): array {
             $adminId = (int) ($request->user('admin')?->getAuthIdentifier() ?? 0);
 
@@ -214,16 +239,20 @@ class AppServiceProvider extends ServiceProvider
             if ((bool) config('geoflow.admin_ui_v3_enabled', false) && $admin instanceof Admin) {
                 $registry = app(AdminUiRegistry::class);
                 $viewData = $view->getData();
+                $routeName = request()->route()?->getName();
                 $view->with('adminUiV3', [
                     'navigation' => $registry->navigation($admin),
                     'current' => $registry->currentPage(
                         $admin,
-                        request()->route()?->getName(),
+                        $routeName,
                         (string) ($viewData['activeMenu'] ?? '')
                     ),
-                    'settings_navigation' => $registry->settingsNavigation($admin, request()->route()?->getName()),
-                    'show_settings_navigation' => $registry->activeKey(request()->route()?->getName()) === 'site_settings'
+                    'page_identity' => $registry->pageIdentity($routeName),
+                    'settings_navigation' => $registry->settingsNavigation($admin, $routeName),
+                    'show_settings_navigation' => $registry->activeKey($routeName) === 'site_settings'
                         && ! request()->routeIs('admin.account.*'),
+                    'ai_configurator_navigation' => $registry->aiConfiguratorNavigation($routeName),
+                    'show_ai_configurator_navigation' => $registry->activeKey($routeName) === 'ai_config',
                     'site_url' => (string) config('geoflow.site_url', config('app.url')),
                 ]);
             }

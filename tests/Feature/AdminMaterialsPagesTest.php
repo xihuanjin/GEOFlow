@@ -5,6 +5,9 @@ namespace Tests\Feature;
 use App\Jobs\PrepareKnowledgeChunkSyncJob;
 use App\Models\Admin;
 use App\Models\AiModel;
+use App\Models\Article;
+use App\Models\Author;
+use App\Models\Category;
 use App\Models\Image;
 use App\Models\ImageLibrary;
 use App\Models\Keyword;
@@ -19,10 +22,12 @@ use App\Models\UrlImportJobLog;
 use App\Services\GeoFlow\KnowledgeChunkSyncCoordinator;
 use App\Services\GeoFlow\ManagedImageFileService;
 use App\Services\GeoFlow\UrlImportProcessingService;
+use App\Support\AdminWeb;
 use App\Support\GeoFlow\ApiKeyCrypto;
 use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
@@ -166,6 +171,104 @@ class AdminMaterialsPagesTest extends TestCase
         $this->actingAs($admin, 'admin')
             ->get(route('admin.url-import.history'))
             ->assertForbidden();
+    }
+
+    public function test_material_pages_share_the_section_navigation_and_keep_index_actions(): void
+    {
+        config()->set('geoflow.admin_ui_v3_enabled', true);
+
+        $admin = Admin::query()->create([
+            'username' => 'materials_section_navigation_admin',
+            'password' => 'secret-123',
+            'email' => 'materials-section-navigation@example.com',
+            'display_name' => 'Materials Navigation Admin',
+            'role' => 'super_admin',
+            'status' => 'active',
+        ]);
+
+        foreach ([
+            route('admin.materials.index') => null,
+            route('admin.knowledge-bases.index') => 'knowledge-bases',
+            route('admin.keyword-libraries.index') => 'keywords',
+            route('admin.title-libraries.index') => 'titles',
+            route('admin.image-libraries.index') => 'images',
+            route('admin.authors.index') => 'authors',
+            route('admin.url-import') => 'url-import',
+        ] as $url => $activeKey) {
+            $response = $this->actingAs($admin, 'admin')->get($url);
+
+            $response
+                ->assertOk()
+                ->assertSee('data-materials-navigation', false)
+                ->assertSee(AdminWeb::routePath('admin.knowledge-bases.index'), false)
+                ->assertSee(AdminWeb::routePath('admin.keyword-libraries.index'), false)
+                ->assertSee(AdminWeb::routePath('admin.title-libraries.index'), false)
+                ->assertSee(AdminWeb::routePath('admin.image-libraries.index'), false)
+                ->assertSee(AdminWeb::routePath('admin.authors.index'), false)
+                ->assertSee(AdminWeb::routePath('admin.url-import'), false);
+
+            $document = new \DOMDocument;
+            $document->loadHTML((string) $response->getContent(), LIBXML_NOERROR | LIBXML_NOWARNING | LIBXML_NONET);
+            $xpath = new \DOMXPath($document);
+            $navigation = $xpath->query('//*[@data-materials-navigation]')?->item(0);
+            $items = $xpath->query('.//*[@data-materials-navigation-item]', $navigation);
+            $activeItems = $xpath->query('.//*[@aria-current="page"]', $navigation);
+
+            self::assertNotNull($navigation, $url);
+            self::assertSame(6, $items?->length, $url);
+            self::assertSame(
+                ['knowledge-bases', 'keywords', 'titles', 'images', 'authors', 'url-import'],
+                array_map(
+                    static fn (\DOMNode $item): string => (string) $item->attributes?->getNamedItem('data-materials-navigation-item')?->nodeValue,
+                    iterator_to_array($items),
+                ),
+                $url,
+            );
+            self::assertSame(6, $xpath->query('.//*[@data-materials-navigation-dot]', $navigation)?->length, $url);
+            self::assertSame($activeKey === null ? 0 : 1, $activeItems?->length, $url);
+
+            if ($activeKey !== null) {
+                self::assertSame(
+                    $activeKey,
+                    $activeItems?->item(0)?->attributes?->getNamedItem('data-materials-navigation-item')?->nodeValue,
+                    $url,
+                );
+            }
+
+            if ($activeKey === 'knowledge-bases') {
+                $response
+                    ->assertSee('href="'.route('admin.knowledge-bases.create').'"', false)
+                    ->assertSee('href="'.route('admin.knowledge-bases.create', ['mode' => 'upload']).'"', false);
+            }
+
+            if ($activeKey === 'keywords') {
+                $response->assertSee('href="'.route('admin.keyword-libraries.create').'"', false);
+            }
+
+            if ($activeKey === 'titles') {
+                $response->assertSee('href="'.route('admin.title-libraries.create').'"', false);
+            }
+
+            if ($activeKey === 'images') {
+                $response->assertSee('href="'.route('admin.image-libraries.create').'"', false);
+            }
+
+            if ($activeKey === 'authors') {
+                $response->assertSee('href="'.route('admin.authors.create').'"', false);
+            }
+
+            if ($activeKey === 'url-import') {
+                $response->assertSee('href="'.route('admin.url-import.history').'"', false);
+            }
+        }
+
+        foreach (['zh_CN', 'en', 'ja', 'es', 'ru', 'pt_BR'] as $locale) {
+            App::setLocale($locale);
+
+            foreach (['knowledge_bases', 'keyword_libraries', 'title_libraries', 'image_libraries', 'author_manage', 'url_import'] as $key) {
+                self::assertNotSame('admin.materials.'.$key, __('admin.materials.'.$key), $locale.': '.$key);
+            }
+        }
     }
 
     public function test_title_library_creation_uses_the_standalone_form_page(): void
@@ -720,6 +823,55 @@ class AdminMaterialsPagesTest extends TestCase
         ]);
     }
 
+    public function test_admin_cannot_delete_knowledge_base_referenced_by_independent_article_quality_configuration(): void
+    {
+        $admin = Admin::query()->create([
+            'username' => 'knowledge_delete_article_admin',
+            'password' => 'secret-123',
+            'email' => 'knowledge-delete-article-admin@example.com',
+            'display_name' => 'Knowledge Delete Article Admin',
+            'role' => 'admin',
+            'status' => 'active',
+        ]);
+        $knowledgeBase = KnowledgeBase::query()->create([
+            'name' => '被独立文章引用知识库',
+            'description' => '',
+            'content' => '独立文章的质检知识库引用需要阻止删除。',
+            'character_count' => 20,
+            'file_type' => 'markdown',
+            'word_count' => 20,
+        ]);
+        $category = Category::query()->create([
+            'name' => '知识库删除保护',
+            'slug' => 'knowledge-delete-protection',
+        ]);
+        $author = Author::query()->create(['name' => '知识库删除保护作者']);
+        $article = Article::query()->create([
+            'title' => '独立文章质检知识库删除保护',
+            'slug' => 'independent-article-quality-knowledge-delete-protection',
+            'content' => '文章正文。',
+            'category_id' => (int) $category->id,
+            'author_id' => (int) $author->id,
+            'status' => 'draft',
+            'review_status' => 'pending',
+        ]);
+        $article->aiQualityKnowledgeBases()->attach((int) $knowledgeBase->id, ['sort_order' => 0]);
+
+        $this->actingAs($admin, 'admin')
+            ->from(route('admin.knowledge-bases.index'))
+            ->post(route('admin.knowledge-bases.delete', ['knowledgeBaseId' => (int) $knowledgeBase->id]))
+            ->assertRedirect(route('admin.knowledge-bases.index'))
+            ->assertSessionHasErrors();
+
+        $this->assertDatabaseHas('knowledge_bases', [
+            'id' => (int) $knowledgeBase->id,
+        ]);
+        $this->assertDatabaseHas('article_ai_quality_knowledge_bases', [
+            'article_id' => (int) $article->id,
+            'knowledge_base_id' => (int) $knowledgeBase->id,
+        ]);
+    }
+
     public function test_admin_can_refresh_knowledge_chunks_with_real_embedding_model(): void
     {
         Http::fake([
@@ -815,10 +967,13 @@ class AdminMaterialsPagesTest extends TestCase
         $this->actingAs($admin, 'admin')
             ->get(route('admin.knowledge-bases.index'))
             ->assertOk()
-            ->assertSee('data-knowledge-refresh-modal', false)
+            ->assertSee('data-admin-action-dialog', false)
             ->assertSee('data-refresh-chunks-form', false)
+            ->assertSee('data-dialog-title="'.__('admin.knowledge_bases.refresh_confirm_title').'"', false)
+            ->assertSee('data-refresh-submit-button disabled aria-disabled="true"', false)
             ->assertSee('data-refresh-progress', false)
             ->assertSee(__('admin.knowledge_bases.refresh_confirm_title'))
+            ->assertDontSee('data-knowledge-refresh-modal', false)
             ->assertSee(__('admin.knowledge_bases.refresh_progress_initial'))
             ->assertDontSee(__('admin.knowledge_bases.confirm_refresh_chunks', ['name' => '待更新切片知识库']));
     }
@@ -1582,6 +1737,38 @@ class AdminMaterialsPagesTest extends TestCase
             ->get(route('admin.knowledge-bases.detail', ['knowledgeBaseId' => (int) $knowledgeBase->id]))
             ->assertOk()
             ->assertSee(__('admin.knowledge_detail.heading'));
+    }
+
+    public function test_knowledge_editor_exposes_a_left_heading_navigation_tree(): void
+    {
+        $admin = Admin::query()->create([
+            'username' => 'knowledge_outline_admin',
+            'password' => 'secret-123',
+            'email' => 'knowledge-outline-admin@example.com',
+            'display_name' => 'Knowledge Outline Admin',
+            'role' => 'admin',
+            'status' => 'active',
+        ]);
+
+        $knowledgeBase = KnowledgeBase::query()->create([
+            'name' => '目录导航知识库',
+            'description' => '验证 Markdown 目录导航。',
+            'content' => "# 一级标题\n\n## 二级标题\n\n### 三级标题\n\n#### 四级标题",
+            'character_count' => 31,
+            'used_task_count' => 0,
+            'file_type' => 'markdown',
+            'file_path' => '',
+            'word_count' => 4,
+            'usage_count' => 0,
+        ]);
+
+        $this->actingAs($admin, 'admin')
+            ->get(route('admin.knowledge-bases.detail', ['knowledgeBaseId' => (int) $knowledgeBase->id]))
+            ->assertOk()
+            ->assertSee('outline: {', false)
+            ->assertSee('enable: true', false)
+            ->assertSee("position: 'left'", false)
+            ->assertSee('data-knowledge-outline-levels="1,2,3,4"', false);
     }
 
     public function test_admin_can_manage_keyword_and_title_details(): void

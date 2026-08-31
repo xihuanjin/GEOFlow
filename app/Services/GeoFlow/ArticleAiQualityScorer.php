@@ -21,7 +21,6 @@ class ArticleAiQualityScorer
         'ad_false_or_misleading' => 'advertising_compliance',
         'ad_industry_specific' => 'advertising_compliance',
         'ad_identifiability' => 'advertising_compliance',
-        'ai_generated_disclosure' => 'advertising_compliance',
         'content_integrity' => 'content_integrity',
     ];
 
@@ -46,6 +45,7 @@ class ArticleAiQualityScorer
         $uncertainties = array_values(is_array($modelResult['uncertainties'] ?? null) ? $modelResult['uncertainties'] : []);
         $dimensionScores = self::DIMENSION_MAXIMUMS;
         $hasCriticalIssue = false;
+        $hasHighSeverityIssue = false;
 
         foreach ($issues as $issue) {
             $code = (string) ($issue['code'] ?? '');
@@ -54,6 +54,7 @@ class ArticleAiQualityScorer
             $deduction = self::SEVERITY_DEDUCTIONS[$severity] ?? self::SEVERITY_DEDUCTIONS['medium'];
             $dimensionScores[$dimension] = max(0, $dimensionScores[$dimension] - $deduction);
             $hasCriticalIssue = $hasCriticalIssue || $severity === 'critical';
+            $hasHighSeverityIssue = $hasHighSeverityIssue || $severity === 'high';
         }
 
         $score = array_sum($dimensionScores);
@@ -63,6 +64,7 @@ class ArticleAiQualityScorer
             true,
         ) || $this->hasMaterialUncertainty($uncertainties)
             || $this->hasUnresolvedEvidence($issues)
+            || $hasHighSeverityIssue
             || $this->hasUncertainPromotionContext($modelResult, $issues);
 
         $decision = match (true) {
@@ -91,6 +93,10 @@ class ArticleAiQualityScorer
         foreach ($issues as $issue) {
             if (! is_array($issue)) {
                 continue;
+            }
+
+            if (! array_key_exists((string) ($issue['code'] ?? ''), self::CODE_DIMENSIONS)) {
+                throw new \InvalidArgumentException('AI quality issue code is invalid.');
             }
 
             $knowledgeRefs = is_array($issue['knowledge_refs'] ?? null) ? $issue['knowledge_refs'] : [];

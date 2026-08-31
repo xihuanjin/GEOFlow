@@ -3,7 +3,9 @@
 namespace Tests\Feature;
 
 use App\Models\Admin;
+use App\Models\Article;
 use App\Models\Author;
+use App\Models\Category;
 use App\Models\Image;
 use App\Models\ImageLibrary;
 use App\Services\GeoFlow\ManagedImageFileService;
@@ -74,6 +76,42 @@ class AdminAuthorImageLibraryStandalonePagesTest extends TestCase
             ->assertSee('value="editable-author@example.test"', false);
     }
 
+    public function test_trashed_articles_are_counted_and_keep_their_author_protected(): void
+    {
+        $author = Author::query()->create(['name' => 'Trashed article author']);
+        $category = Category::query()->create([
+            'name' => 'Trashed article category',
+            'slug' => 'trashed-article-category',
+        ]);
+        $article = Article::query()->create([
+            'title' => 'Trashed author article',
+            'slug' => 'trashed-author-article',
+            'content' => 'Article retained in the trash.',
+            'category_id' => $category->id,
+            'author_id' => $author->id,
+        ]);
+        $article->delete();
+
+        $admin = $this->admin();
+
+        $this->actingAs($admin, 'admin')
+            ->get(route('admin.authors.index'))
+            ->assertOk()
+            ->assertViewHas('authors', static function (array $authors) use ($author): bool {
+                $row = collect($authors)->firstWhere('id', (int) $author->id);
+
+                return is_array($row) && $row['trashed_count'] === 1;
+            });
+
+        $this->actingAs($admin, 'admin')
+            ->from(route('admin.authors.index'))
+            ->post(route('admin.authors.delete', ['authorId' => $author->id]))
+            ->assertRedirect(route('admin.authors.index'))
+            ->assertSessionHasErrors();
+
+        $this->assertModelExists($author);
+    }
+
     public function test_author_form_handles_array_old_input_without_a_server_error(): void
     {
         $this->actingAs($this->admin(), 'admin')
@@ -135,7 +173,8 @@ class AdminAuthorImageLibraryStandalonePagesTest extends TestCase
             ->assertSee('data-dialog-close', false)
             ->assertSee('id="batch-form"', false)
             ->assertSee('data-image-delete-submit', false)
-            ->assertSee('window.confirm', false);
+            ->assertSee('window.AdminActionDialog', false)
+            ->assertDontSee('window.confirm', false);
     }
 
     public function test_image_library_create_edit_and_upload_pages_render_the_expected_forms(): void
