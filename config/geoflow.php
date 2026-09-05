@@ -7,7 +7,7 @@
  */
 $adminBasePath = trim((string) env('ADMIN_BASE_PATH', 'geo_admin'), '/');
 $adminBasePath = $adminBasePath !== '' ? $adminBasePath : 'geo_admin';
-$defaultUpdateMetadataUrl = 'https://raw.githubusercontent.com/yaojingang/GEOFlow/main/version.json';
+$defaultUpdateMetadataUrl = 'https://github.com/yaojingang/GEOFlow/releases/latest/download/version.json';
 $updateMetadataUrl = trim((string) env('GEOFLOW_UPDATE_METADATA_URL', $defaultUpdateMetadataUrl));
 $updateMetadataUrl = $updateMetadataUrl !== '' ? $updateMetadataUrl : $defaultUpdateMetadataUrl;
 $telemetryEndpoint = trim((string) env('GEOFLOW_TELEMETRY_ENDPOINT', ''));
@@ -80,6 +80,13 @@ return [
     'site_url' => rtrim((string) env('SITE_URL', 'http://localhost'), '/'),
     'knowledge_fact_generation_max_per_run' => 200,
     'knowledge_fact_generation_batch_size' => 25,
+    'knowledge_fact_generation_rate_per_minute' => max(1, min(600, (int) env('GEOFLOW_KNOWLEDGE_FACT_GENERATION_RATE_PER_MINUTE', 10))),
+    'knowledge_fact_generation_max_batch_attempts' => max(1, min(10, (int) env('GEOFLOW_KNOWLEDGE_FACT_GENERATION_MAX_BATCH_ATTEMPTS', 3))),
+    'knowledge_fact_generation_batch_lease_seconds' => max(180, min(600, (int) env('GEOFLOW_KNOWLEDGE_FACT_GENERATION_BATCH_LEASE_SECONDS', 210))),
+    'knowledge_fact_generation_max_recovery_attempts' => max(1, min(10, (int) env('GEOFLOW_KNOWLEDGE_FACT_GENERATION_MAX_RECOVERY_ATTEMPTS', 3))),
+    'knowledge_fact_generation_recovery_stale_seconds' => max(60, min(3600, (int) env('GEOFLOW_KNOWLEDGE_FACT_GENERATION_RECOVERY_STALE_SECONDS', 300))),
+    'knowledge_fact_generation_finalizer_pending_seconds' => max(60, min(3600, (int) env('GEOFLOW_KNOWLEDGE_FACT_GENERATION_FINALIZER_PENDING_SECONDS', 900))),
+    'knowledge_fact_generation_pending_batch_max_age_seconds' => max(60, min(86400, (int) env('GEOFLOW_KNOWLEDGE_FACT_GENERATION_PENDING_BATCH_MAX_AGE_SECONDS', 900))),
     'knowledge_fact_generation_retention_days' => 90,
 
     // SEO 描述
@@ -149,7 +156,7 @@ return [
     'telemetry_enabled' => filter_var(env('GEOFLOW_TELEMETRY_ENABLED', false), FILTER_VALIDATE_BOOLEAN),
     'telemetry_endpoint' => $telemetryEndpoint,
     'telemetry_interval_seconds' => max(3600, (int) env('GEOFLOW_TELEMETRY_INTERVAL_SECONDS', 86400)),
-    // GitHub version.json 地址；默认每天检查一次，可通过 GEOFLOW_UPDATE_CHECK_ENABLED=false 关闭
+    // GitHub 最新正式 Release 的 version.json 资产；默认每天检查一次，可通过 GEOFLOW_UPDATE_CHECK_ENABLED=false 关闭
     'update_check_enabled' => filter_var(env('GEOFLOW_UPDATE_CHECK_ENABLED', env('APP_ENV') !== 'testing'), FILTER_VALIDATE_BOOLEAN),
     'update_metadata_url' => $updateMetadataUrl,
     'update_metadata_cache_ttl_seconds' => (int) env('GEOFLOW_UPDATE_METADATA_CACHE_TTL', 86400),
@@ -271,6 +278,13 @@ return [
     'semantic_chunking_max_chars' => max(1, (int) env('GEOFLOW_SEMANTIC_CHUNKING_MAX_CHARS', 20000)),
     // Embedding 文档向量化单次请求切片数；部分供应商限制 batch 较小，默认保守拆分。
     'embedding_batch_size' => max(1, min(64, (int) env('GEOFLOW_EMBEDDING_BATCH_SIZE', 1))),
+    // 管理员 AI 执行身份灰度开关：先写入和 Shadow，对账完成后再逐步强制访问与撤权边界。
+    'admin_ai_access' => [
+        'ownership_write_enabled' => filter_var(env('GEOFLOW_ADMIN_AI_OWNERSHIP_WRITE_ENABLED', true), FILTER_VALIDATE_BOOL),
+        'shadow_enabled' => filter_var(env('GEOFLOW_ADMIN_AI_SHADOW_ENABLED', true), FILTER_VALIDATE_BOOL),
+        'access_enforce_enabled' => filter_var(env('GEOFLOW_ADMIN_AI_ACCESS_ENFORCE_ENABLED', false), FILTER_VALIDATE_BOOL),
+        'revocation_enforce_enabled' => filter_var(env('GEOFLOW_ADMIN_AI_REVOCATION_ENFORCE_ENABLED', false), FILTER_VALIDATE_BOOL),
+    ],
     // 单个知识向量化 Job 最多处理的切片数，控制队列进程峰值内存。
     'knowledge_embedding_job_size' => max(1, min(32, (int) env('GEOFLOW_KNOWLEDGE_EMBEDDING_JOB_SIZE', 32))),
     // Worker 心跳超过该秒数未更新时，任务页标记为 stale。
