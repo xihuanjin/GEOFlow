@@ -17,8 +17,9 @@ docker build \
 
 echo ""
 echo "✅ Done. Run:"
-echo "  docker rm -f geoflow 2>/dev/null; docker run -d --name geoflow --restart always \\"
+echo "  docker rm -f geoflow 2>/dev/null"
+echo "  docker run -d --name geoflow --restart always \\"
 echo "    -p 18080:18080 \\"
-echo "    -v /path/to/.env.single:/var/www/html/.env \\"
-echo "    -v /path/to/storage:/var/www/html/storage \\"
+echo "    -v /opt/1panel/apps/geoflow/geoflow/.env.single:/var/www/html/.env \\"
+echo "    -v /opt/1panel/apps/geoflow/geoflow/storage:/var/www/html/storage \\"
 echo "    ${APP_TAG}"
