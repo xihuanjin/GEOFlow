@@ -35,6 +35,15 @@
                         'iconClass' => 'bg-cyan-50 text-cyan-700 ring-cyan-100',
                         'action' => __('admin.site_settings.homepage.open_editor'),
                     ],
+                    [
+                        'title' => __('article_permalink.title'),
+                        'desc' => __('article_permalink.description'),
+                        'href' => '#site-settings-permalink',
+                        'target' => 'site-settings-permalink',
+                        'icon' => 'link-2',
+                        'iconClass' => 'bg-violet-50 text-violet-700 ring-violet-100',
+                        'action' => __('admin.site_settings.open_section'),
+                    ],
                 ],
             ],
         ],
@@ -44,6 +53,18 @@
                 'desc' => __('admin.site_settings.group_operations_desc'),
                 'columns' => '',
                 'items' => [
+                    [
+                        'title' => __('friend_links.title'),
+                        'desc' => __('friend_links.count', [
+                            'total' => count($friendLinkSnapshot['config']['links'] ?? []),
+                            'enabled' => collect($friendLinkSnapshot['config']['links'] ?? [])->where('enabled', true)->count(),
+                        ]),
+                        'href' => route('admin.site-settings.friend-links.edit'),
+                        'target' => null,
+                        'icon' => 'link-2',
+                        'iconClass' => 'bg-blue-50 text-blue-600 ring-blue-100',
+                        'action' => __('admin.site_settings.manage_module'),
+                    ],
                     [
                         'title' => __('admin.site_settings.ads.section_title'),
                         'desc' => __('admin.site_settings.module_ads_desc'),
@@ -126,9 +147,13 @@
 @section('content')
     @php
         $showHomepageEditor = $homepageEditorPage ?? false;
+        $siteSettingsOpenTarget = session('site_settings_open_target');
     @endphp
 
-    <div class="px-4 sm:px-0">
+    <div class="px-4 sm:px-0"
+         data-url-separate-editor
+         data-has-unsaved-input="{{ session()->hasOldInput('site_name') ? '1' : '0' }}"
+         @if (is_string($siteSettingsOpenTarget) && $siteSettingsOpenTarget !== '') data-site-settings-open-target="{{ $siteSettingsOpenTarget }}" @endif>
         @if ($showHomepageEditor)
             <div class="mb-8">
                 <a href="{{ route('admin.site-settings.index') }}" class="inline-flex min-h-10 items-center text-sm font-semibold text-gray-600 transition-colors hover:text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
@@ -189,7 +214,7 @@
             </div>
 
         @if ($canManageProtectedWorkflows ?? false)
-        <details id="site-settings-ai-workspace" class="mb-6 overflow-hidden rounded-lg bg-white shadow group" @if ($errors->has('enabled')) open @endif>
+        <details id="site-settings-ai-workspace" class="mb-6 overflow-hidden rounded-lg bg-white shadow group" @if ($errors->has('enabled') || $siteSettingsOpenTarget === 'site-settings-ai-workspace') open @endif>
             <summary class="flex cursor-pointer list-none items-center justify-between gap-4 border-b border-gray-200 px-6 py-5 [&::-webkit-details-marker]:hidden">
                 <div class="flex min-w-0 items-start gap-4">
                     <span class="hidden h-10 w-10 shrink-0 items-center justify-center rounded-md bg-indigo-50 text-indigo-600 ring-1 ring-indigo-100 sm:inline-flex">
@@ -210,6 +235,7 @@
             <div class="px-6 py-6">
                 <form method="POST" action="{{ route('admin.site-settings.ai-workspace.update') }}" class="space-y-5">
                     @csrf
+                <input type="hidden" name="appearance_revision" value="{{ $appearanceRevision }}">
                     <input type="hidden" name="enabled" value="0">
 
                     <div class="rounded-lg border border-gray-200 bg-gray-50/70 p-4 sm:p-5">
@@ -273,8 +299,9 @@
                 <i data-lucide="chevron-down" class="w-5 h-5 shrink-0 text-gray-400 transition-transform duration-200 group-open:rotate-180" aria-hidden="true"></i>
             </summary>
             <div class="px-6 py-6">
-                <form method="POST" action="{{ route('admin.site-settings.update') }}" class="space-y-6">
+                <form method="POST" action="{{ route('admin.site-settings.update') }}" class="space-y-6" data-url-source-form>
                     @csrf
+                <input type="hidden" name="appearance_revision" value="{{ $appearanceRevision }}">
 
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div>
@@ -484,6 +511,101 @@
                 </form>
             </div>
         </details>
+
+        <details id="site-settings-permalink" class="mb-6 overflow-hidden rounded-lg bg-white shadow group" aria-labelledby="article-permalink-title" @if($errors->has('pattern') || is_array($articlePermalinkPreview ?? null) || session('url_change_draft_restored')) open @endif>
+            <summary class="flex cursor-pointer list-none items-center justify-between gap-4 border-b border-gray-200 px-6 py-5 [&::-webkit-details-marker]:hidden">
+                <div class="flex min-w-0 items-start gap-4">
+                    <span class="hidden h-10 w-10 shrink-0 items-center justify-center rounded-md bg-violet-50 text-violet-700 ring-1 ring-violet-100 sm:inline-flex">
+                        <i data-lucide="link-2" class="h-5 w-5"></i>
+                    </span>
+                    <div class="min-w-0 max-w-3xl">
+                        <h3 id="article-permalink-title" class="text-lg font-medium text-gray-900">{{ __('article_permalink.title') }}</h3>
+                        <p class="mt-1 text-sm leading-6 text-gray-600">{{ __('article_permalink.description') }}</p>
+                    </div>
+                </div>
+                <i data-lucide="chevron-down" class="h-5 w-5 shrink-0 text-gray-400 transition-transform duration-200 group-open:rotate-180" aria-hidden="true"></i>
+            </summary>
+            <div class="px-6 py-6">
+                    <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div class="max-w-3xl">
+                            <div class="flex flex-wrap items-center gap-2">
+                                <span class="rounded-full bg-violet-50 px-2.5 py-1 text-xs font-semibold text-violet-700 ring-1 ring-violet-100">
+                                    revision {{ $articlePermalinkPolicy->revision }}
+                                </span>
+                            </div>
+                            <p class="mt-2 text-sm leading-6 text-gray-600">{{ __('article_permalink.current_rule', ['pattern' => $articlePermalinkPolicy->currentPattern]) }}</p>
+                            @if ($articlePermalinkPolicy->activatedAt)
+                                <p class="mt-1 text-xs text-gray-500">{{ __('article_permalink.last_activated', ['time' => $articlePermalinkPolicy->activatedAt]) }}</p>
+                            @endif
+                        </div>
+
+                    </div>
+
+                    @if ($articlePermalinkInstalledThemeWarning ?? false)
+                        <div class="mt-5 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900" role="note">
+                            {{ __('article_permalink.installed_theme_warning') }}
+                        </div>
+                    @endif
+
+                    <p class="mt-4 text-sm leading-6 text-gray-600">{{ __('url_change.ui.stable') }}</p>
+                    <details class="mt-5" @if($errors->has('pattern') || session('url_change_draft_restored')) open @endif>
+                        <summary class="min-h-10 cursor-pointer text-sm font-semibold text-blue-700 focus-visible:outline-2 focus-visible:outline-blue-600">{{ __('url_change.ui.edit_rule') }}</summary>
+                    <form method="POST" action="{{ route('admin.site-settings.article-permalink.preview') }}" class="mt-5 rounded-lg border border-gray-200 bg-gray-50/70 p-5" data-url-separate-check>
+                        @csrf
+                <input type="hidden" name="appearance_revision" value="{{ $appearanceRevision }}">
+                        <fieldset @disabled(!($canManageProtectedWorkflows ?? false))>
+                            <legend class="text-sm font-semibold text-gray-900">{{ __('article_permalink.choose_preset') }}</legend>
+                            <div class="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                                @foreach ($articlePermalinkPresets as $presetKey => $preset)
+                                    <label class="flex cursor-pointer items-start gap-3 rounded-md border border-gray-200 bg-white p-3 hover:border-violet-300">
+                                        <input type="radio" name="permalink_preset" value="{{ $preset['pattern'] }}" class="mt-1 border-gray-300 text-violet-600 focus:ring-violet-500" data-permalink-preset @checked(old('pattern', $articlePermalinkPolicy->currentPattern) === $preset['pattern'])>
+                                        <span class="min-w-0">
+                                            <span class="block text-sm font-medium text-gray-900">{{ __($preset['name']) }}</span>
+                                            <code class="mt-1 block break-all font-mono text-xs text-gray-600">{{ $preset['pattern'] }}</code>
+                                        </span>
+                                    </label>
+                                @endforeach
+                            </div>
+
+                            <label for="article-permalink-pattern" class="mt-5 block text-sm font-semibold text-gray-900">{{ __('article_permalink.custom_template') }}</label>
+                            <input id="article-permalink-pattern" type="text" name="pattern" required maxlength="160" value="{{ old('pattern', $articlePermalinkPolicy->currentPattern) }}" class="mt-2 w-full rounded-md border border-gray-300 px-3 py-2 font-mono text-sm shadow-sm focus:border-violet-500 focus:ring-violet-500" aria-describedby="article-permalink-help article-permalink-format-help @error('pattern') article-permalink-error @enderror" @error('pattern') aria-invalid="true" @enderror>
+                            <p id="article-permalink-help" class="mt-2 text-xs leading-5 text-gray-600">{{ __('article_permalink.token_help') }}</p>
+                            <p id="article-permalink-format-help" class="mt-1 text-xs leading-5 text-gray-600">
+                                {{ __('article_permalink.format_help') }}
+                                <span class="font-medium text-violet-700">{{ __('article_permalink.format_example') }}</span>
+                            </p>
+                            @error('pattern')
+                                <p id="article-permalink-error" class="mt-3 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-sm leading-6 text-red-700" role="alert">
+                                    <i data-lucide="circle-alert" class="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true"></i>
+                                    <span>{{ $message }}</span>
+                                </p>
+                            @enderror
+
+                            <div class="mt-4 flex justify-end">
+                                <button type="submit" class="inline-flex min-h-10 items-center justify-center rounded-md border border-transparent bg-violet-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-violet-700 active:scale-[.98] disabled:cursor-not-allowed disabled:bg-gray-400" data-url-separate-submit disabled>
+                                    <i data-lucide="scan-search" class="mr-2 h-4 w-4"></i>
+                                    {{ __('url_change.ui.check') }}
+                                </button>
+                            </div>
+                        </fieldset>
+                        <p class="mt-3 text-xs leading-5 text-gray-600">{{ __('url_change.ui.check_hint') }}</p>
+                        <p class="mt-2 text-sm leading-6 text-amber-900" data-url-unsaved-hint hidden>{{ __('url_change.ui.save_first') }}</p>
+                        <p class="mt-2 text-xs leading-5 text-amber-900" data-url-separate-nojs>{{ __('url_change.ui.no_js') }}</p>
+                    </form>
+                    </details>
+
+                    @if ($articlePermalinkPolicy->history !== [])
+                        <div class="mt-5">
+                            <h5 class="text-sm font-semibold text-gray-900">{{ __('article_permalink.history') }}</h5>
+                            <div class="mt-2 flex flex-wrap gap-2">
+                                @foreach ($articlePermalinkPolicy->history as $historicalPolicy)
+                                    <code class="rounded-md bg-gray-100 px-2.5 py-1.5 text-xs text-gray-700">{{ $historicalPolicy['pattern'] }}</code>
+                                @endforeach
+                            </div>
+                        </div>
+                    @endif
+            </div>
+        </details>
         @endif
 
         @if ($showHomepageEditor)
@@ -512,6 +634,7 @@
 
                 <form method="POST" action="{{ route('admin.site-settings.homepage-modules.preset') }}" class="mb-5 rounded-2xl border border-indigo-100 bg-white p-5">
                     @csrf
+                <input type="hidden" name="appearance_revision" value="{{ $appearanceRevision }}">
                     <div class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
                         <div class="min-w-0 flex-1">
                             <div class="inline-flex items-center rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700 ring-1 ring-indigo-100">
@@ -549,6 +672,7 @@
 
                 <form method="POST" action="{{ route('admin.site-settings.homepage-modules.import') }}" class="mb-5 rounded-2xl border border-blue-100 bg-white p-5">
                     @csrf
+                <input type="hidden" name="appearance_revision" value="{{ $appearanceRevision }}">
                     <div class="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_240px]">
                         <div class="min-w-0">
                             <div class="inline-flex items-center rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 ring-1 ring-blue-100">
@@ -581,6 +705,7 @@
 
                 <form method="POST" action="{{ route('admin.site-settings.homepage-modules') }}" id="homepage-module-form" class="mb-8 rounded-2xl border border-gray-200 bg-gray-50/70 p-5">
                     @csrf
+                <input type="hidden" name="appearance_revision" value="{{ $appearanceRevision }}">
                     <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                         <div>
                             <div class="inline-flex items-center rounded-full bg-white px-3 py-1 text-xs font-semibold text-blue-700 ring-1 ring-blue-100">
@@ -792,6 +917,7 @@
                 @else
                 <form method="POST" action="{{ route('admin.site-settings.theme') }}" class="space-y-5">
                     @csrf
+                <input type="hidden" name="appearance_revision" value="{{ $appearanceRevision }}">
 
                     @php
                         $currentThemeLabel = __('admin.site_settings.theme.default_name');
@@ -937,6 +1063,7 @@
                         </button>
                     </div>
                     @csrf
+                <input type="hidden" name="appearance_revision" value="{{ $appearanceRevision }}">
 
                     <div class="rounded-2xl border border-blue-100 bg-blue-50/60 p-4">
                         <div class="text-sm font-medium text-gray-900">{{ __('admin.site_settings.ads.preview_title') }}</div>
@@ -1029,6 +1156,7 @@
                 @php($textAdModules = is_array(old('text_ad_modules')) ? old('text_ad_modules') : $articleDetailTextAds)
                 <form method="POST" action="{{ route('admin.site-settings.text-ads') }}" id="article-text-ad-form" class="mt-8 space-y-6 border-t border-gray-200 pt-8">
                     @csrf
+                <input type="hidden" name="appearance_revision" value="{{ $appearanceRevision }}">
                     <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                         <div>
                             <h4 class="text-base font-semibold text-gray-900">{{ __('admin.site_settings.ads.text_section_title') }}</h4>
@@ -1176,6 +1304,7 @@
 @push('scripts')
     <script>
         document.addEventListener('DOMContentLoaded', function () {
+            const permalinkPattern = document.getElementById('article-permalink-pattern');
             const openSiteSettingsTarget = function (targetId, behavior) {
                 const target = targetId ? document.getElementById(targetId) : null;
 
@@ -1191,6 +1320,14 @@
 
                 return true;
             };
+
+            document.querySelectorAll('[data-permalink-preset]').forEach(function (preset) {
+                preset.addEventListener('change', function () {
+                    if (permalinkPattern && preset.checked) {
+                        permalinkPattern.value = preset.value;
+                    }
+                });
+            });
 
             document.querySelectorAll('[data-site-settings-target]').forEach(function (trigger) {
                 trigger.addEventListener('click', function (event) {
@@ -1215,6 +1352,15 @@
                     openSiteSettingsTarget(targetId, 'auto');
                 }
             };
+
+            const requestedTarget = document.querySelector('[data-site-settings-open-target]')
+                ?.getAttribute('data-site-settings-open-target');
+
+            if (requestedTarget) {
+                window.requestAnimationFrame(function () {
+                    openSiteSettingsTarget(requestedTarget, 'auto');
+                });
+            }
 
             openHashTarget();
             window.addEventListener('hashchange', openHashTarget);
